@@ -95,6 +95,7 @@ private struct QualitySlider: View {
                     in: 0...Double(stopCount - 1),
                     step: 1
                 )
+                .labelsHidden()
                 .frame(width: geometry.size.width)
                 .position(x: geometry.size.width / 2, y: 8)
 
