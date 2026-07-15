@@ -115,7 +115,7 @@ The wrapper supports:
 
 Default is `auto`.
 
-- In **fast**, **normal**, and **normal-hq** mode, auto turns tiling on for larger outputs. Fast forces tiling on 8 GB systems.
+- In **fast**, **normal**, and **normal-hq** mode, auto turns tiling on for larger outputs. Normal and Normal HQ use larger tiles on Macs with at least 24 GB RAM to reduce overlap and model invocations without resizing the source. Fast forces tiling on 8 GB systems.
 - **Creative** uses AuraSR's overlapped tiles.
 - In **advanced** and **maximum** mode, auto always uses 512 px SeedVR2 VAE tiles on macOS. This keeps peak unified-memory use bounded while preserving the full requested output size.
 - Vivid keeps PyTorch's Metal memory guard enabled and reserves CPU headroom so macOS remains responsive during long SeedVR2 runs. Advanced users can override the defaults with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `PYTORCH_MPS_LOW_WATERMARK_RATIO`, or `VIVID_CPU_THREADS`.

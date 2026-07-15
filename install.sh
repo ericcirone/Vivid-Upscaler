@@ -6,7 +6,7 @@ BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="9"
+RUNTIME_VERSION="10"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -219,7 +219,14 @@ def compute_target_size(width: int, height: int, short_edge: int, max_long_edge:
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
-def choose_tile_size(tile_mode: str, width: int, height: int, native_scale: int, mode: str) -> int:
+def choose_tile_size(
+    tile_mode: str,
+    width: int,
+    height: int,
+    native_scale: int,
+    mode: str,
+    system_ram_gb: int,
+) -> int:
     if tile_mode == "off":
         return 0
     if tile_mode == "on":
@@ -236,8 +243,12 @@ def choose_tile_size(tile_mode: str, width: int, height: int, native_scale: int,
         return 0
 
     if native_megapixels > 60 or long_edge > 9000:
+        if system_ram_gb >= 24:
+            return 512
         return 320
     if native_megapixels > 18 or long_edge > 5500:
+        if system_ram_gb >= 24:
+            return 512
         return 384
     return 0
 
@@ -274,6 +285,11 @@ def infer_tiled(
     total = tiles_x * tiles_y
     completed = 0
 
+    # Upload the source once, then take each overlapping tile as an MPS view.
+    # Copying every padded tile separately repeats the overlap transfer and
+    # forces an avoidable allocation for every model invocation.
+    input_tensor = input_tensor.to(device)
+
     with torch.inference_mode():
         for tile_y in range(tiles_y):
             y0 = tile_y * tile_size
@@ -287,7 +303,7 @@ def infer_tiled(
                 px0 = max(0, x0 - tile_pad)
                 px1 = min(width, x1 + tile_pad)
 
-                patch = input_tensor[:, :, py0:py1, px0:px1].to(device)
+                patch = input_tensor[:, :, py0:py1, px0:px1]
                 prediction = model(patch)
 
                 crop_top = (y0 - py0) * scale
@@ -440,6 +456,7 @@ def main() -> int:
     parser.add_argument("--short-edge", type=int, required=True)
     parser.add_argument("--max-long-edge", type=int, required=True)
     parser.add_argument("--tile", choices=["auto", "on", "off"], default="auto")
+    parser.add_argument("--system-ram-gb", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--denoise-strength", type=float, default=0.5)
     parser.add_argument("--quality", type=int, choices=range(1, 101), default=90, metavar="1-100")
     args = parser.parse_args()
@@ -512,7 +529,14 @@ def main() -> int:
 
     width, height = image.size
     target_width, target_height = compute_target_size(width, height, args.short_edge, args.max_long_edge)
-    tile_size = choose_tile_size(args.tile, width, height, native_scale, args.mode)
+    tile_size = choose_tile_size(
+        args.tile,
+        width,
+        height,
+        native_scale,
+        args.mode,
+        args.system_ram_gb,
+    )
     tile_note = "off" if tile_size == 0 else f"on ({tile_size}px)"
     print(f"      Source: {width}x{height}", flush=True)
     print(f"      Target: {target_width}x{target_height}", flush=True)
@@ -1143,6 +1167,7 @@ PY
     --short-edge "$RESOLUTION" \
     --max-long-edge "$MAX_RESOLUTION" \
     --tile "$TILE_MODE" \
+    --system-ram-gb "$AVAILABLE_RAM" \
     --denoise-strength "$DENOISE_STRENGTH" \
     --quality "$QUALITY"
   STATUS=$?
