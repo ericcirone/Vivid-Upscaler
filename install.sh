@@ -343,6 +343,7 @@ def cjxl_executable() -> Path | None:
 def save_color_managed_jxl(
     image: Image.Image,
     destination: Path,
+    quality: int,
     exif: Image.Exif | None,
     icc_profile: bytes,
     xmp: bytes | None,
@@ -363,10 +364,9 @@ def save_color_managed_jxl(
             str(pixels_path),
             str(destination),
             "-q",
-            # Lossy libjxl encoding transforms wide-gamut pixels to its working
-            # color space. Lossless encoding retains the source ICC profile as
-            # the decoded output profile instead of normalizing it to sRGB.
-            "100",
+            # cjxl maps this JPEG-like percentage to visual distance; every
+            # quality exposed by the app (60-90) selects lossy VarDCT encoding.
+            str(quality),
             "--container=1",
         ]
 
@@ -404,7 +404,7 @@ def save_image(
         exif_bytes = exif.tobytes()
     if ext == ".jxl":
         if icc_profile:
-            save_color_managed_jxl(image, destination, exif, icc_profile, xmp)
+            save_color_managed_jxl(image, destination, quality, exif, icc_profile, xmp)
             return
         # pyjpegxl uses libjxl container boxes that remain readable by Apple's
         # ImageIO decoder while retaining the source EXIF and XMP payloads.
@@ -1240,6 +1240,7 @@ def cjxl_executable() -> Path | None:
 def save_color_managed_jxl(
     image: Image.Image,
     destination: Path,
+    quality: int,
     exif: Image.Exif | None,
     icc_profile: bytes,
     xmp: bytes | None,
@@ -1256,8 +1257,8 @@ def save_color_managed_jxl(
         image.save(pixels_path, format="PNG", icc_profile=icc_profile)
         arguments = [
             str(executable), str(pixels_path), str(destination),
-            # Exact ICC-profile retention requires lossless JXL encoding.
-            "-q", "100", "--container=1",
+            # App quality presets are below 100, so cjxl uses lossy VarDCT.
+            "-q", str(quality), "--container=1",
         ]
         if exif_box := jxl_exif_box(exif):
             exif_path = temporary_root / "exif.tiff"
@@ -1281,7 +1282,7 @@ with Image.open(source) as image:
             xmp = original.info.get("xmp")
             icc_profile = original.info.get("icc_profile")
         if icc_profile:
-            save_color_managed_jxl(image, destination, exif, icc_profile, xmp)
+            save_color_managed_jxl(image, destination, quality, exif, icc_profile, xmp)
         else:
             pyjpegxl.write_from_numpy(
                 destination,
