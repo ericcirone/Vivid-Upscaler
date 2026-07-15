@@ -50,7 +50,7 @@ echo "Installing dependencies..."
 uv pip install --python "$VENV_DIR/bin/python" --upgrade pip setuptools wheel
 uv pip install --python "$VENV_DIR/bin/python" torch torchvision torchaudio
 uv pip install --python "$VENV_DIR/bin/python" -r "$REPO_DIR/requirements.txt"
-uv pip install --python "$VENV_DIR/bin/python" pillow numpy "spandrel==0.4.2" safetensors
+uv pip install --python "$VENV_DIR/bin/python" pillow pillow-jxl-plugin numpy "spandrel==0.4.2" safetensors
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 #!/usr/bin/env python3
@@ -66,6 +66,11 @@ import numpy as np
 import torch
 from PIL import Image, ImageOps
 from spandrel import ImageModelDescriptor, ModelLoader
+
+try:
+    import pillow_jxl  # Registers JPEG XL support with Pillow.
+except ImportError:
+    pillow_jxl = None
 
 MODELS = {
     "fast": {
@@ -387,6 +392,116 @@ if [[ ! -x "$PYTHON" || ! -f "$CLI" || ! -f "$UPSCALE_HELPER" ]]; then
   exit 1
 fi
 
+model_is_installed() {
+  case "$1" in
+    fast)
+      [[ -f "$MODEL_ROOT/realesrgan/realesr-general-x4v3.pth" && -f "$MODEL_ROOT/realesrgan/realesr-general-wdn-x4v3.pth" ]]
+      ;;
+    normal)
+      [[ -f "$MODEL_ROOT/nomos/4xNomosWebPhoto_RealPLKSR.safetensors" ]]
+      ;;
+    advanced-3b)
+      [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+download_model_file() {
+  local url="$1"
+  local destination="$2"
+  if [[ -f "$destination" ]]; then
+    echo "Already installed: $(basename "$destination")"
+    return
+  fi
+  mkdir -p "$(dirname "$destination")"
+  "$PYTHON" -u - "$url" "$destination" <<'PY'
+from pathlib import Path
+import sys
+import urllib.request
+
+url = sys.argv[1]
+destination = Path(sys.argv[2])
+partial = destination.with_suffix(destination.suffix + ".part")
+last_percent = -5
+
+def progress(block_count: int, block_size: int, total_size: int) -> None:
+    global last_percent
+    if total_size <= 0:
+        return
+    percent = min(100, int(block_count * block_size * 100 / total_size))
+    if percent == 100 or percent >= last_percent + 5:
+        last_percent = percent
+        print(f"Downloading {destination.name}: {percent}%", flush=True)
+
+try:
+    urllib.request.urlretrieve(url, partial, progress)
+    partial.replace(destination)
+except BaseException:
+    partial.unlink(missing_ok=True)
+    raise
+PY
+}
+
+if [[ "${1:-}" == "models" ]]; then
+  case "${2:-}" in
+    status)
+      if [[ "${3:-}" == "--json" ]]; then
+        FAST=false; NORMAL=false; ADVANCED=false
+        model_is_installed fast && FAST=true
+        model_is_installed normal && NORMAL=true
+        model_is_installed advanced-3b && ADVANCED=true
+        printf '{"fast":%s,"normal":%s,"advanced-3b":%s}\n' "$FAST" "$NORMAL" "$ADVANCED"
+      else
+        for MODEL_ID in fast normal advanced-3b; do
+          if model_is_installed "$MODEL_ID"; then
+            echo "$MODEL_ID: installed"
+          else
+            echo "$MODEL_ID: not installed"
+          fi
+        done
+      fi
+      exit 0
+      ;;
+    install)
+      MODEL_ID="${3:-}"
+      case "$MODEL_ID" in
+        fast)
+          download_model_file \
+            "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth" \
+            "$MODEL_ROOT/realesrgan/realesr-general-x4v3.pth"
+          download_model_file \
+            "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth" \
+            "$MODEL_ROOT/realesrgan/realesr-general-wdn-x4v3.pth"
+          ;;
+        normal)
+          download_model_file \
+            "https://huggingface.co/Phips/4xNomosWebPhoto_RealPLKSR/resolve/main/4xNomosWebPhoto_RealPLKSR.safetensors" \
+            "$MODEL_ROOT/nomos/4xNomosWebPhoto_RealPLKSR.safetensors"
+          ;;
+        advanced-3b)
+          download_model_file \
+            "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp16.safetensors" \
+            "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors"
+          download_model_file \
+            "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/ema_vae_fp16.safetensors" \
+            "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
+          ;;
+        *)
+          echo "Usage: vvd models install fast|normal|advanced-3b" >&2
+          exit 2
+          ;;
+      esac
+      echo "Installed model: $MODEL_ID"
+      exit 0
+      ;;
+    *)
+      echo "Usage: vvd models status [--json] | vvd models install MODEL" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 if [[ $# -lt 1 ]]; then
   cat <<'HELP'
 Usage:
@@ -399,6 +514,8 @@ Examples:
   vvd photo.jpg enhanced.png --mode normal --scale 2
   vvd photo.jpg enhanced.png --mode advanced --scale 2
   vvd ./photos ./enhanced --mode advanced --resolution 2048
+  vvd models status
+  vvd models install normal
 
 Modes:
   fast      Fastest photographic upscaling with realesr-general-x4v3.
@@ -631,12 +748,19 @@ ARGS=(
   --batch_size 1
 )
 
+PROCESSING_OUTPUT="$OUTPUT"
+CONVERT_JXL="0"
+if [[ "$MODE" == "advanced" && -n "$OUTPUT" && "${OUTPUT##*.}" == "jxl" ]]; then
+  PROCESSING_OUTPUT="${OUTPUT%.*}.vivid-temp.png"
+  CONVERT_JXL="1"
+fi
+
 if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
   ARGS+=(--vae_encode_tiled --vae_decode_tiled)
 fi
 
-if [[ -n "$OUTPUT" ]]; then
-  ARGS+=(--output "$OUTPUT")
+if [[ -n "$PROCESSING_OUTPUT" ]]; then
+  ARGS+=(--output "$PROCESSING_OUTPUT")
 fi
 
 export PYTORCH_MPS_HIGH_WATERMARK_RATIO="${PYTORCH_MPS_HIGH_WATERMARK_RATIO:-0.0}"
@@ -732,6 +856,21 @@ else
   STATUS=$?
   set -e
   trap - INT TERM
+
+  if [[ "$STATUS" -eq 0 && "$CONVERT_JXL" == "1" ]]; then
+    "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" <<'PY'
+from pathlib import Path
+import sys
+import pillow_jxl
+from PIL import Image
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+with Image.open(source) as image:
+    image.save(destination, quality=95)
+source.unlink(missing_ok=True)
+PY
+  fi
 fi
 
 if [[ "$SHOW_PROGRESS" == "1" ]]; then

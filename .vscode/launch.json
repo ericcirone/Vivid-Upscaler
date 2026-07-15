@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Vivid-Upscaler}",
+            "name": "Debug VividUpscaler",
+            "target": "VividUpscaler",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug VividUpscaler"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Vivid-Upscaler}",
+            "name": "Release VividUpscaler",
+            "target": "VividUpscaler",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release VividUpscaler"
+        }
+    ]
+}

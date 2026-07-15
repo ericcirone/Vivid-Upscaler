@@ -1,6 +1,9 @@
-# Vivid Mac CLI
+# Vivid Upscaler
 
-Vivid is a Mac wrapper for photo upscaling with three modes:
+Vivid is a CLI-first Mac photo upscaler with an optional lightweight native GUI.
+Both surfaces use the same models and processing pipeline.
+
+The three modes are:
 
 - **fast** uses `realesr-general-x4v3`
 - **normal** uses `4xNomosWebPhoto_RealPLKSR`
@@ -18,6 +21,29 @@ vvd
 ./install.sh
 ```
 
+Run the installer again after pulling changes so the installed `vvd` command
+stays in sync with this repository.
+
+## Native Mac app
+
+Build and launch the SwiftUI app:
+
+```bash
+./script/build_and_run.sh
+```
+
+The app lets you drop in one photo, choose the mode, a scale or target
+resolution, and an output format. Output is written beside the input using a
+predictable name:
+
+```text
+portrait-vivid-upscale-2x.jpg
+portrait-vivid-upscale-2048px.webp
+```
+
+On first launch, the app checks the CLI model inventory and guides you through
+downloading one or more models. Normal is the recommended starting point.
+
 For fish, if `~/.local/bin` is not already on your path:
 
 ```fish
@@ -32,7 +58,13 @@ vvd input.jpg output.jpg --mode fast --scale 2
 vvd input.jpg output.jpg --mode normal --scale 2
 vvd input.jpg output.jpg --mode advanced --scale 2
 vvd ./input-folder ./output-folder --mode advanced --resolution 2048
+vvd models status
+vvd models status --json
+vvd models install normal
 ```
+
+Supported GUI output choices are the input format, PNG, JPG, JPEG XL, and WebP.
+JPEG XL support is installed through `pillow-jxl-plugin`.
 
 ## Modes
 

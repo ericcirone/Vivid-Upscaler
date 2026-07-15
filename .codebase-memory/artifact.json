@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "4e8790f2236d573310734f040c6f41ed27f04e58",
+    "indexed_at": "2026-07-15T00:09:17Z",
+    "project": "Vivid-Upscaler",
+    "nodes": 204,
+    "edges": 385,
+    "original_size": 1179648,
+    "compressed_size": 63829,
+    "compression_level": 9
+}
