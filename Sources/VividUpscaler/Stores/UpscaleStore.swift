@@ -31,6 +31,7 @@ final class UpscaleStore {
     var status = "Drop a photo to begin"
     var logLines: [String] = []
     var elapsedTime: TimeInterval?
+    var upscaleStartedAt: Date?
     var errorMessage: String?
     var noticeMessage: String?
     var completedOutputURL: URL?
@@ -79,6 +80,11 @@ final class UpscaleStore {
 
     var formattedElapsedTime: String? {
         elapsedTime.map(Self.formatElapsedTime)
+    }
+
+    func formattedRunningElapsedTime(at date: Date) -> String {
+        guard let upscaleStartedAt else { return Self.formatElapsedTime(0) }
+        return Self.formatElapsedTime(date.timeIntervalSince(upscaleStartedAt))
     }
 
     static func formatElapsedTime(_ elapsedTime: TimeInterval) -> String {
@@ -161,6 +167,7 @@ final class UpscaleStore {
             errorMessage = nil
             completedOutputURL = nil
             let startedAt = Date()
+            upscaleStartedAt = startedAt
             try await cli.upscale(input: inputURL, output: destination, options: options) { [weak self] event in
                 Task { @MainActor in
                     if let fraction = event.fraction { self?.progress = fraction }
@@ -180,6 +187,7 @@ final class UpscaleStore {
             status = "Upscale failed"
         }
         isRunning = false
+        upscaleStartedAt = nil
     }
 
     func cancel() {

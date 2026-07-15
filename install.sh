@@ -64,6 +64,7 @@ cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import shutil
@@ -477,13 +478,16 @@ def main() -> int:
 
     if spec["kind"] == "aurasr":
         from aura_sr import AuraSR
+        from safetensors.torch import load_file
         model_path = model_dir / "model.safetensors"
         if not model_path.exists() or not (model_dir / "config.json").exists():
             raise RuntimeError("AuraSR v2 is not installed. Run: vvd models install creative")
         device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
         print(f"      Device: {device}", flush=True)
         print("      Loading model...", flush=True)
-        model = AuraSR.from_pretrained(str(model_path), device=device)
+        config = json.loads((model_dir / "config.json").read_text())
+        model = AuraSR(config, device=device)
+        model.upsampler.load_state_dict(load_file(str(model_path)), strict=True)
         with Image.open(input_path) as opened:
             source_format = opened.format
             exif = opened.getexif()

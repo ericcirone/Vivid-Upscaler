@@ -97,10 +97,20 @@ struct ContentView: View {
     private var progressArea: some View {
         VStack(spacing: 10) {
             if store.isRunning {
-                if let progress = store.progress {
-                    ProgressView(value: progress)
-                } else {
-                    ProgressView()
+                HStack(spacing: 10) {
+                    if let progress = store.progress {
+                        ProgressView(value: progress)
+                    } else {
+                        ProgressView()
+                    }
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let elapsed = store.formattedRunningElapsedTime(at: context.date)
+                        Text(elapsed)
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 62, alignment: .trailing)
+                            .accessibilityLabel("Elapsed time \(elapsed)")
+                    }
                 }
                 HStack {
                     Text(store.status).font(.callout).foregroundStyle(.secondary).lineLimit(1)
