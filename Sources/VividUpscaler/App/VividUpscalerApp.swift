@@ -12,6 +12,13 @@ struct VividUpscalerApp: App {
                 .frame(minWidth: 760, minHeight: 560)
         }
         .defaultSize(width: 900, height: 650)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Install Command Line Tool…") {
+                    Task { await store.installCommandLineTool() }
+                }
+            }
+        }
 
         Settings {
             SettingsView()

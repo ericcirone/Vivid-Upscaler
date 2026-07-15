@@ -7,11 +7,6 @@ REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
 
-command -v git >/dev/null 2>&1 || {
-  echo "git is required. Install the Xcode command-line tools with: xcode-select --install" >&2
-  exit 1
-}
-
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -20,12 +15,23 @@ fi
 
 mkdir -p "$INSTALL_ROOT" "$BIN_DIR" "$MODEL_ROOT"
 
-if [[ -d "$REPO_DIR/.git" ]]; then
+if [[ -d "$REPO_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
   echo "Updating SeedVR2..."
   git -C "$REPO_DIR" pull --ff-only
-else
+elif [[ -f "$REPO_DIR/inference_cli.py" ]]; then
+  echo "Using installed SeedVR2 runtime..."
+elif command -v git >/dev/null 2>&1; then
   echo "Cloning SeedVR2 CLI..."
   git clone --depth 1 https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git "$REPO_DIR"
+else
+  echo "Downloading SeedVR2 CLI..."
+  ARCHIVE_DIR="$(mktemp -d)"
+  curl -L --fail --silent --show-error \
+    https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/archive/refs/heads/main.tar.gz \
+    -o "$ARCHIVE_DIR/seedvr2.tar.gz"
+  mkdir -p "$REPO_DIR"
+  tar -xzf "$ARCHIVE_DIR/seedvr2.tar.gz" --strip-components=1 -C "$REPO_DIR"
+  rm -rf "$ARCHIVE_DIR"
 fi
 
 REQUIRED_PYTHON="3.12"
@@ -383,14 +389,14 @@ set -euo pipefail
 INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 PYTHON="$INSTALL_ROOT/venv/bin/python"
 CLI="$INSTALL_ROOT/repo/inference_cli.py"
-UPSCALE_HELPER="$INSTALL_ROOT/vivid_upscale.py"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/vivid_upscale.py" ]]; then
+  UPSCALE_HELPER="$SCRIPT_DIR/vivid_upscale.py"
+else
+  UPSCALE_HELPER="$INSTALL_ROOT/vivid_upscale.py"
+fi
 MODEL_ROOT="$INSTALL_ROOT/models"
 ORIGINAL_CWD="$PWD"
-
-if [[ ! -x "$PYTHON" || ! -f "$CLI" || ! -f "$UPSCALE_HELPER" ]]; then
-  echo "Vivid is not installed. Run install.sh again." >&2
-  exit 1
-fi
 
 model_is_installed() {
   case "$1" in
@@ -464,6 +470,10 @@ if [[ "${1:-}" == "models" ]]; then
       exit 0
       ;;
     install)
+      if [[ ! -x "$PYTHON" ]]; then
+        echo "Vivid's runtime is not installed. Open Vivid Upscaler or run install.sh." >&2
+        exit 1
+      fi
       MODEL_ID="${3:-}"
       case "$MODEL_ID" in
         fast)
@@ -502,7 +512,7 @@ if [[ "${1:-}" == "models" ]]; then
   esac
 fi
 
-if [[ $# -lt 1 ]]; then
+if [[ $# -lt 1 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'HELP'
 Usage:
   vvd INPUT [OUTPUT] [options]
@@ -546,6 +556,11 @@ The first run downloads model weights and can use significant disk space.
 Models are stored under ~/.local/share/vivid/models by default.
 HELP
   exit 0
+fi
+
+if [[ ! -x "$PYTHON" || ! -f "$CLI" || ! -f "$UPSCALE_HELPER" ]]; then
+  echo "Vivid's runtime is not installed. Open Vivid Upscaler or run install.sh." >&2
+  exit 1
 fi
 
 make_abs_path() {
@@ -731,10 +746,9 @@ if tile_mode == 'on':
 elif tile_mode == 'off':
     print('off')
 else:
-    if model == '7b':
-        print('on' if megapixels > 14 or long_edge > 5000 else 'off')
-    else:
-        print('on' if megapixels > 18 or long_edge > 5600 else 'off')
+    # The untiled SeedVR VAE can ask Metal for a single buffer many times larger
+    # than the finished image. Keep auto mode safe on unified-memory Macs.
+    print('on')
 PY
 )"
 fi
@@ -756,17 +770,42 @@ if [[ "$MODE" == "advanced" && -n "$OUTPUT" && "${OUTPUT##*.}" == "jxl" ]]; then
 fi
 
 if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
-  ARGS+=(--vae_encode_tiled --vae_decode_tiled)
+  ARGS+=(
+    --vae_encode_tiled
+    --vae_encode_tile_size 512
+    --vae_encode_tile_overlap 64
+    --vae_decode_tiled
+    --vae_decode_tile_size 512
+    --vae_decode_tile_overlap 64
+  )
 fi
 
 if [[ -n "$PROCESSING_OUTPUT" ]]; then
   ARGS+=(--output "$PROCESSING_OUTPUT")
 fi
 
-export PYTORCH_MPS_HIGH_WATERMARK_RATIO="${PYTORCH_MPS_HIGH_WATERMARK_RATIO:-0.0}"
-export PYTORCH_MPS_LOW_WATERMARK_RATIO="${PYTORCH_MPS_LOW_WATERMARK_RATIO:-0.0}"
+# A value of 0.0 disables PyTorch's MPS allocation guard and can make macOS
+# unresponsive under unified-memory pressure. These defaults retain most of the
+# recommended Metal working set while leaving room for macOS and other apps.
+export PYTORCH_MPS_HIGH_WATERMARK_RATIO="${PYTORCH_MPS_HIGH_WATERMARK_RATIO:-0.90}"
+export PYTORCH_MPS_LOW_WATERMARK_RATIO="${PYTORCH_MPS_LOW_WATERMARK_RATIO:-0.80}"
 export PYTHONUNBUFFERED="1"
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-1}"
+
+# Keep CPU-side decoding, color conversion, and tensor helpers from occupying
+# every performance core. VIVID_CPU_THREADS remains an explicit escape hatch.
+if [[ -z "${VIVID_CPU_THREADS:-}" ]]; then
+  CPU_COUNT="$(sysctl -n hw.logicalcpu 2>/dev/null || printf '4')"
+  if ! [[ "$CPU_COUNT" =~ ^[0-9]+$ ]] || (( CPU_COUNT < 1 )); then
+    CPU_COUNT=4
+  fi
+  VIVID_CPU_THREADS=$((CPU_COUNT * 3 / 4))
+  (( VIVID_CPU_THREADS < 1 )) && VIVID_CPU_THREADS=1
+fi
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-$VIVID_CPU_THREADS}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-$VIVID_CPU_THREADS}"
+export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-$VIVID_CPU_THREADS}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-$VIVID_CPU_THREADS}"
 
 if [[ "$SHOW_PROGRESS" == "1" ]]; then
   echo "[1/3] Preparing Vivid"
@@ -856,6 +895,11 @@ else
   STATUS=$?
   set -e
   trap - INT TERM
+
+  if [[ "$STATUS" -eq 134 ]]; then
+    echo "SeedVR was stopped after Metal rejected an unsafe memory allocation." >&2
+    echo "Try a smaller scale/resolution; Vivid's memory guard prevented macOS from exhausting unified memory." >&2
+  fi
 
   if [[ "$STATUS" -eq 0 && "$CONVERT_JXL" == "1" ]]; then
     "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" <<'PY'

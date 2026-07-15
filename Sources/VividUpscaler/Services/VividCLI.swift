@@ -8,12 +8,18 @@ actor VividCLI {
 
     enum CLIError: LocalizedError {
         case notInstalled
+        case bundledResourcesMissing
+        case appTranslocated
         case failed(String)
 
         var errorDescription: String? {
             switch self {
             case .notInstalled:
-                "Vivid CLI is not installed. Run ./install.sh, then reopen the app."
+                "Vivid's processing runtime could not be installed."
+            case .bundledResourcesMissing:
+                "This copy of Vivid Upscaler does not contain its bundled CLI resources."
+            case .appTranslocated:
+                "Move Vivid Upscaler to Applications before installing its command line tool."
             case .failed(let message):
                 message.isEmpty ? "Vivid CLI failed." : message
             }
@@ -25,6 +31,9 @@ actor VividCLI {
     func executableURL() -> URL? {
         let environment = ProcessInfo.processInfo.environment
         var candidates: [String] = []
+        if let bundled = bundledResource(named: "vvd") {
+            candidates.append(bundled.path)
+        }
         if let explicit = environment["VIVID_CLI"], !explicit.isEmpty {
             candidates.append(explicit)
         }
@@ -46,6 +55,7 @@ actor VividCLI {
     }
 
     func installModels(_ ids: [String], onEvent: @escaping @Sendable (Event) -> Void) async throws {
+        try await ensureRuntime(onEvent: onEvent)
         for (index, id) in ids.enumerated() {
             let base = Double(index) / Double(max(ids.count, 1))
             let span = 1.0 / Double(max(ids.count, 1))
@@ -62,6 +72,7 @@ actor VividCLI {
         options: UpscaleOptions,
         onEvent: @escaping @Sendable (Event) -> Void
     ) async throws {
+        try await ensureRuntime(onEvent: onEvent)
         var arguments = [input.path, output.path, "--mode", options.mode.rawValue]
         switch options.sizingKind {
         case .scale:
@@ -77,6 +88,67 @@ actor VividCLI {
 
     func cancel() {
         process?.terminate()
+    }
+
+    func installCommandLineTool() throws -> URL {
+        guard let executable = bundledResource(named: "vvd") else {
+            throw CLIError.bundledResourcesMissing
+        }
+        let isReadOnlyVolume = (try? executable.resourceValues(forKeys: [.volumeIsReadOnlyKey]).volumeIsReadOnly) == true
+        if executable.path.contains("/AppTranslocation/") || isReadOnlyVolume {
+            throw CLIError.appTranslocated
+        }
+
+        let binDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/bin", isDirectory: true)
+        let destination = binDirectory.appendingPathComponent("vvd")
+        try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+
+        if FileManager.default.fileExists(atPath: destination.path)
+            || (try? FileManager.default.destinationOfSymbolicLink(atPath: destination.path)) != nil {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: executable)
+        return destination
+    }
+
+    private func bundledResource(named name: String) -> URL? {
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let url = resourceURL.appendingPathComponent("CLI", isDirectory: true).appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    private func runtimeRoot() -> URL {
+        if let explicit = ProcessInfo.processInfo.environment["VIVID_HOME"], !explicit.isEmpty {
+            return URL(fileURLWithPath: NSString(string: explicit).expandingTildeInPath, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/vivid", isDirectory: true)
+    }
+
+    private func runtimeIsInstalled() -> Bool {
+        let root = runtimeRoot()
+        return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
+            && FileManager.default.fileExists(atPath: root.appendingPathComponent("repo/inference_cli.py").path)
+    }
+
+    private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {
+        guard !runtimeIsInstalled() else { return }
+        guard let installer = bundledResource(named: "install.sh") else {
+            throw CLIError.bundledResourcesMissing
+        }
+
+        onEvent(Event(fraction: nil, message: "Installing Vivid processing runtime"))
+        let privateBin = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VividUpscaler/InternalCLI", isDirectory: true)
+        try await run(
+            executable: installer,
+            arguments: [],
+            environmentOverrides: ["VIVID_BIN_DIR": privateBin.path]
+        ) { line in
+            onEvent(Event(fraction: Self.percentage(in: line), message: line))
+        }
+        guard runtimeIsInstalled() else { throw CLIError.notInstalled }
     }
 
     private func runForOutput(arguments: [String]) async throws -> String {
@@ -104,10 +176,21 @@ actor VividCLI {
     private func run(arguments: [String], onLine: @escaping @Sendable (String) -> Void) async throws {
         guard let executable = executableURL() else { throw CLIError.notInstalled }
 
+        try await run(executable: executable, arguments: arguments, environmentOverrides: [:], onLine: onLine)
+    }
+
+    private func run(
+        executable: URL,
+        arguments: [String],
+        environmentOverrides: [String: String],
+        onLine: @escaping @Sendable (String) -> Void
+    ) async throws {
+
         let task = Process()
         let pipe = Pipe()
         task.executableURL = executable
         task.arguments = arguments
+        task.environment = ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, override in override }
         task.standardOutput = pipe
         task.standardError = pipe
         process = task

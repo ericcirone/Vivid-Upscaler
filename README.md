@@ -1,7 +1,7 @@
 # Vivid Upscaler
 
-Vivid is a CLI-first Mac photo upscaler with an optional lightweight native GUI.
-Both surfaces use the same models and processing pipeline.
+Vivid is a native Mac photo upscaler with an optional Terminal command.
+The app bundles the CLI, so both surfaces execute the same models and processing pipeline.
 
 The three modes are:
 
@@ -15,22 +15,30 @@ The command name is:
 vvd
 ```
 
-## Install
+## Native Mac app
+
+```bash
+./script/build_and_run.sh
+```
+
+The built app contains the `vvd` implementation and works without installing a
+separate command first. The first model installation also prepares the shared
+processing runtime under `~/.local/share/vivid`.
+
+To use the exact same bundled CLI in Terminal, choose **Vivid Upscaler > Install
+Command Line Tool…**. This creates `~/.local/bin/vvd` as a link to the copy in
+the app bundle.
+
+## Standalone CLI development install
+
+For a repository-only CLI installation without the app:
 
 ```bash
 ./install.sh
 ```
 
-Run the installer again after pulling changes so the installed `vvd` command
+Run the installer again after pulling changes so the standalone `vvd` command
 stays in sync with this repository.
-
-## Native Mac app
-
-Build and launch the SwiftUI app:
-
-```bash
-./script/build_and_run.sh
-```
 
 The app lets you drop in one photo, choose the mode, a scale or target
 resolution, and an output format. Output is written beside the input using a
@@ -94,7 +102,8 @@ The wrapper supports:
 Default is `auto`.
 
 - In **fast** and **normal** mode, auto turns tiling on only for larger outputs.
-- In **advanced** mode, auto decides whether SeedVR2 VAE tiling is needed based on output size and model.
+- In **advanced** mode, auto always uses 512 px SeedVR2 VAE tiles on macOS. This keeps peak unified-memory use bounded while preserving the full requested output size.
+- Vivid keeps PyTorch's Metal memory guard enabled and reserves CPU headroom so macOS remains responsive during long SeedVR2 runs. Advanced users can override the defaults with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `PYTORCH_MPS_LOW_WATERMARK_RATIO`, or `VIVID_CPU_THREADS`.
 - `off` forces the faster path when memory allows.
 - `on` forces the safer lower memory path.
 

@@ -8,7 +8,7 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("CLI") {
-                Text("The app uses VIVID_CLI when set, then ~/.local/bin/vvd.")
+                Text("Vivid Upscaler runs its bundled CLI. Choose Vivid Upscaler > Install Command Line Tool… to make the same CLI available as vvd in Terminal.")
                     .font(.callout)
             }
         }

@@ -13,6 +13,8 @@ APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+APP_RESOURCES="$APP_CONTENTS/Resources"
+CLI_RESOURCES="$APP_RESOURCES/CLI"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -23,9 +25,23 @@ swift build --package-path "$ROOT_DIR" --scratch-path "$ROOT_DIR/.build/swiftpm"
 BUILD_BINARY="$(swift build --package-path "$ROOT_DIR" --scratch-path "$ROOT_DIR/.build/swiftpm" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS"
+mkdir -p "$APP_MACOS" "$CLI_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+
+# install.sh is the single source of truth for the CLI and its Python helper.
+# Extract those payloads into the app so the GUI and terminal command execute
+# the exact same implementation.
+awk '/^cat > "\$INSTALL_ROOT\/vivid_upscale.py" <<'\''PY'\''$/ { copying=1; next } copying && /^PY$/ { exit } copying' \
+  "$ROOT_DIR/install.sh" > "$CLI_RESOURCES/vivid_upscale.py"
+awk '/^cat > "\$BIN_DIR\/vvd" <<'\''WRAPPER'\''$/ { copying=1; next } copying && /^WRAPPER$/ { exit } copying' \
+  "$ROOT_DIR/install.sh" > "$CLI_RESOURCES/vvd"
+cp "$ROOT_DIR/install.sh" "$CLI_RESOURCES/install.sh"
+[[ -s "$CLI_RESOURCES/vvd" && -s "$CLI_RESOURCES/vivid_upscale.py" ]] || {
+  echo "Failed to extract the shared CLI payload from install.sh" >&2
+  exit 1
+}
+chmod +x "$CLI_RESOURCES/vvd" "$CLI_RESOURCES/vivid_upscale.py" "$CLI_RESOURCES/install.sh"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -45,6 +61,7 @@ PLIST
 open_app() { /usr/bin/open -n "$APP_BUNDLE"; }
 
 case "$MODE" in
+  build) ;;
   run) open_app ;;
   --debug|debug) lldb -- "$APP_BINARY" ;;
   --logs|logs)
@@ -60,5 +77,5 @@ case "$MODE" in
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
     ;;
-  *) echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2; exit 2 ;;
+  *) echo "usage: $0 [build|run|--debug|--logs|--telemetry|--verify]" >&2; exit 2 ;;
 esac

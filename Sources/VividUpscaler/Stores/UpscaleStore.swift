@@ -16,6 +16,7 @@ final class UpscaleStore {
     var progress: Double?
     var status = "Drop a photo to begin"
     var errorMessage: String?
+    var noticeMessage: String?
     var completedOutputURL: URL?
     var showOnboarding = false
     var installedModelIDs: Set<String> = []
@@ -124,6 +125,15 @@ final class UpscaleStore {
             }
         }
         installedModelIDs = try await cli.installedModels()
+    }
+
+    func installCommandLineTool() async {
+        do {
+            let destination = try await cli.installCommandLineTool()
+            noticeMessage = "Installed vvd at \(destination.path). It runs the CLI bundled inside this app."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func revealOutput() {

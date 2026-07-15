@@ -39,6 +39,14 @@ struct ContentView: View {
         } message: {
             Text(store.errorMessage ?? "")
         }
+        .alert("Command Line Tool Installed", isPresented: Binding(
+            get: { store.noticeMessage != nil },
+            set: { if !$0 { store.noticeMessage = nil } }
+        )) {
+            Button("OK") { store.noticeMessage = nil }
+        } message: {
+            Text(store.noticeMessage ?? "")
+        }
         .alert("Replace existing output?", isPresented: Binding(
             get: { store.pendingOverwriteURL != nil },
             set: { if !$0 { store.pendingOverwriteURL = nil } }
