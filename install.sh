@@ -6,7 +6,7 @@ BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="6"
+RUNTIME_VERSION="8"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -311,19 +311,45 @@ def jxl_distance_from_quality(quality: int) -> float:
     return (53.0 / 3000.0 * quality * quality) - (23.0 / 20.0 * quality) + 25.0
 
 
-def save_image(image: Image.Image, destination: Path, quality: int, exif: Image.Exif | None, icc_profile: bytes | None) -> None:
+def jxl_exif_box(exif: Image.Exif | None) -> bytes | None:
+    if not exif:
+        return None
+    exif[274] = 1
+    payload = exif.tobytes()
+    if payload.startswith(b"Exif\x00\x00"):
+        payload = payload[6:]
+    # ISO/IEC 18181-2 stores a four-byte TIFF-header offset before the TIFF
+    # payload. Pillow's bytes use JPEG APP1 framing instead.
+    return b"\x00\x00\x00\x00" + payload
+
+
+def save_image(
+    image: Image.Image,
+    destination: Path,
+    quality: int,
+    exif: Image.Exif | None,
+    icc_profile: bytes | None,
+    xmp: bytes | None,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     save_kwargs: dict[str, object] = {}
     ext = destination.suffix.lower()
+    exif_bytes = None
+    if exif:
+        # The pixels have already been physically transposed, so retain the
+        # source metadata while preventing viewers from rotating them again.
+        exif[274] = 1
+        exif_bytes = exif.tobytes()
     if ext == ".jxl":
-        # pillow-jxl-plugin output and its EXIF box are not readable by Apple's
-        # ImageIO decoder. pyjpegxl uses the reference libjxl encoder and its
-        # metadata-free output works in Preview and Quick Look.
+        # pyjpegxl uses libjxl container boxes that remain readable by Apple's
+        # ImageIO decoder while retaining the source EXIF and XMP payloads.
         pyjpegxl.write_from_numpy(
             destination,
             np.asarray(image),
             lossless=quality >= 100,
             quality=jxl_distance_from_quality(quality),
+            exif=jxl_exif_box(exif),
+            xmp=xmp,
         )
         return
     if ext in {".jpg", ".jpeg"}:
@@ -331,11 +357,12 @@ def save_image(image: Image.Image, destination: Path, quality: int, exif: Image.
         save_kwargs["subsampling"] = 0
     elif ext == ".webp":
         save_kwargs["quality"] = quality
-    if exif:
-        exif[274] = 1
-        save_kwargs["exif"] = exif.tobytes()
+    if exif_bytes:
+        save_kwargs["exif"] = exif_bytes
     if icc_profile:
         save_kwargs["icc_profile"] = icc_profile
+    if xmp:
+        save_kwargs["xmp"] = xmp
     image.save(destination, **save_kwargs)
 
 
@@ -379,6 +406,7 @@ def main() -> int:
             source_format = opened.format
             exif = opened.getexif()
             icc_profile = opened.info.get("icc_profile")
+            xmp = opened.info.get("xmp")
             image = ImageOps.exif_transpose(opened).convert("RGB")
         target_width, target_height = compute_target_size(*image.size, args.short_edge, args.max_long_edge)
         print("      Processing overlapped tiles...", flush=True)
@@ -386,7 +414,7 @@ def main() -> int:
         if result.size != (target_width, target_height):
             result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
         print("      Saving output...", flush=True)
-        save_image(result, output_path, args.quality, exif, icc_profile)
+        save_image(result, output_path, args.quality, exif, icc_profile, xmp)
         return 0
 
     selected_weight: Path
@@ -414,6 +442,7 @@ def main() -> int:
         source_format = opened.format
         exif = opened.getexif()
         icc_profile = opened.info.get("icc_profile")
+        xmp = opened.info.get("xmp")
         image = ImageOps.exif_transpose(opened).convert("RGB")
 
     width, height = image.size
@@ -440,7 +469,7 @@ def main() -> int:
         result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
     print("      Saving output...", flush=True)
-    save_image(result, output_path, args.quality, exif, icc_profile)
+    save_image(result, output_path, args.quality, exif, icc_profile, xmp)
     return 0
 
 
@@ -1094,7 +1123,7 @@ else
   fi
 
   if [[ "$STATUS" -eq 0 && "$CONVERT_QUALITY_OUTPUT" == "1" ]]; then
-    "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" "$QUALITY" <<'PY'
+    "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" "$QUALITY" "$INPUT" <<'PY'
 from pathlib import Path
 import sys
 import pillow_jxl
@@ -1105,6 +1134,7 @@ from PIL import Image
 source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
 quality = int(sys.argv[3])
+metadata_source = Path(sys.argv[4])
 
 
 def jxl_distance_from_quality(value: int) -> float:
@@ -1115,14 +1145,29 @@ def jxl_distance_from_quality(value: int) -> float:
     return (53.0 / 3000.0 * value * value) - (23.0 / 20.0 * value) + 25.0
 
 
+def jxl_exif_box(exif: Image.Exif | None) -> bytes | None:
+    if not exif:
+        return None
+    exif[274] = 1
+    payload = exif.tobytes()
+    if payload.startswith(b"Exif\x00\x00"):
+        payload = payload[6:]
+    return b"\x00\x00\x00\x00" + payload
+
+
 with Image.open(source) as image:
     image = image.convert("RGB")
     if destination.suffix.lower() == ".jxl":
+        with Image.open(metadata_source) as original:
+            exif = original.getexif()
+            xmp = original.info.get("xmp")
         pyjpegxl.write_from_numpy(
             destination,
             np.asarray(image),
             lossless=quality >= 100,
             quality=jxl_distance_from_quality(quality),
+            exif=jxl_exif_box(exif),
+            xmp=xmp,
         )
     else:
         save_kwargs = {"quality": quality}
