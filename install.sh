@@ -6,7 +6,7 @@ BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="2"
+RUNTIME_VERSION="6"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -57,7 +57,7 @@ echo "Installing dependencies..."
 uv pip install --python "$VENV_DIR/bin/python" --upgrade pip setuptools wheel
 uv pip install --python "$VENV_DIR/bin/python" torch torchvision torchaudio
 uv pip install --python "$VENV_DIR/bin/python" -r "$REPO_DIR/requirements.txt"
-uv pip install --python "$VENV_DIR/bin/python" pillow pillow-jxl-plugin numpy "spandrel==0.4.2" safetensors aura-sr
+uv pip install --python "$VENV_DIR/bin/python" pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" safetensors aura-sr
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 #!/usr/bin/env python3
@@ -70,6 +70,7 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
+import pyjpegxl
 import torch
 from PIL import Image, ImageOps
 from spandrel import ImageModelDescriptor, ModelLoader
@@ -300,13 +301,36 @@ def infer_tiled(
     return output
 
 
-def save_image(image: Image.Image, destination: Path, source_format: str | None, exif: Image.Exif | None, icc_profile: bytes | None) -> None:
+def jxl_distance_from_quality(quality: int) -> float:
+    # Match libjxl's JxlEncoderDistanceFromQuality mapping. pyjpegxl's
+    # `quality` argument is actually visual distance, where lower is better.
+    if quality >= 100:
+        return 0.0
+    if quality >= 30:
+        return 0.1 + (100 - quality) * 0.09
+    return (53.0 / 3000.0 * quality * quality) - (23.0 / 20.0 * quality) + 25.0
+
+
+def save_image(image: Image.Image, destination: Path, quality: int, exif: Image.Exif | None, icc_profile: bytes | None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     save_kwargs: dict[str, object] = {}
     ext = destination.suffix.lower()
-    if source_format == "JPEG" or ext in {".jpg", ".jpeg"}:
-        save_kwargs["quality"] = 95
+    if ext == ".jxl":
+        # pillow-jxl-plugin output and its EXIF box are not readable by Apple's
+        # ImageIO decoder. pyjpegxl uses the reference libjxl encoder and its
+        # metadata-free output works in Preview and Quick Look.
+        pyjpegxl.write_from_numpy(
+            destination,
+            np.asarray(image),
+            lossless=quality >= 100,
+            quality=jxl_distance_from_quality(quality),
+        )
+        return
+    if ext in {".jpg", ".jpeg"}:
+        save_kwargs["quality"] = quality
         save_kwargs["subsampling"] = 0
+    elif ext == ".webp":
+        save_kwargs["quality"] = quality
     if exif:
         exif[274] = 1
         save_kwargs["exif"] = exif.tobytes()
@@ -325,6 +349,7 @@ def main() -> int:
     parser.add_argument("--max-long-edge", type=int, required=True)
     parser.add_argument("--tile", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--denoise-strength", type=float, default=0.5)
+    parser.add_argument("--quality", type=int, choices=range(1, 101), default=90, metavar="1-100")
     args = parser.parse_args()
 
     if not 0 <= args.denoise_strength <= 1:
@@ -361,7 +386,7 @@ def main() -> int:
         if result.size != (target_width, target_height):
             result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
         print("      Saving output...", flush=True)
-        save_image(result, output_path, source_format, exif, icc_profile)
+        save_image(result, output_path, args.quality, exif, icc_profile)
         return 0
 
     selected_weight: Path
@@ -415,7 +440,7 @@ def main() -> int:
         result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
     print("      Saving output...", flush=True)
-    save_image(result, output_path, source_format, exif, icc_profile)
+    save_image(result, output_path, args.quality, exif, icc_profile)
     return 0
 
 
@@ -663,6 +688,7 @@ Options:
   --max-resolution N           Maximum long edge. Default: 4096
   --tile auto|on|off           Tiling behavior. Default: auto
   --denoise-strength N         Fast mode denoise balance from 0 to 1. Default: 0.5
+  --quality N                  JPG, JPEG XL, or WebP quality from 1 to 100. Default: 90
   --seed N                     Random seed for advanced mode. Default: 42
   --progress-interval N        Seconds between elapsed-time updates. Default: 10
   --no-progress                Disable wrapper progress messages
@@ -710,6 +736,7 @@ SHOW_PROGRESS="1"
 PROGRESS_INTERVAL="10"
 TILE_MODE="auto"
 DENOISE_STRENGTH="0.5"
+QUALITY="90"
 PASSTHROUGH=()
 
 while [[ $# -gt 0 ]]; do
@@ -764,6 +791,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --denoise-strength)
       DENOISE_STRENGTH="${2:?Missing value for --denoise-strength}"
+      shift 2
+      ;;
+    --quality)
+      QUALITY="${2:?Missing value for --quality}"
       shift 2
       ;;
     --seed)
@@ -822,6 +853,11 @@ esac
 
 if ! [[ "$PROGRESS_INTERVAL" =~ ^[0-9]+$ ]] || [[ "$PROGRESS_INTERVAL" == "0" ]]; then
   echo "--progress-interval must be a positive whole number." >&2
+  exit 2
+fi
+
+if ! [[ "$QUALITY" =~ ^[0-9]+$ ]] || (( QUALITY < 1 || QUALITY > 100 )); then
+  echo "--quality must be a whole number from 1 to 100." >&2
   exit 2
 fi
 
@@ -901,10 +937,12 @@ ARGS=(
 )
 
 PROCESSING_OUTPUT="$OUTPUT"
-CONVERT_JXL="0"
-if [[ ( "$MODE" == "advanced" || "$MODE" == "maximum" ) && -n "$OUTPUT" && "${OUTPUT##*.}" == "jxl" ]]; then
+CONVERT_QUALITY_OUTPUT="0"
+OUTPUT_EXTENSION="${OUTPUT##*.}"
+OUTPUT_EXTENSION="$(printf '%s' "$OUTPUT_EXTENSION" | tr '[:upper:]' '[:lower:]')"
+if [[ ( "$MODE" == "advanced" || "$MODE" == "maximum" ) && -n "$OUTPUT" && "$OUTPUT_EXTENSION" =~ ^(jpg|jpeg|jxl|webp)$ ]]; then
   PROCESSING_OUTPUT="${OUTPUT%.*}.vivid-temp.png"
-  CONVERT_JXL="1"
+  CONVERT_QUALITY_OUTPUT="1"
 fi
 
 if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
@@ -1011,7 +1049,8 @@ PY
     --short-edge "$RESOLUTION" \
     --max-long-edge "$MAX_RESOLUTION" \
     --tile "$TILE_MODE" \
-    --denoise-strength "$DENOISE_STRENGTH"
+    --denoise-strength "$DENOISE_STRENGTH" \
+    --quality "$QUALITY"
   STATUS=$?
   set -e
 else
@@ -1054,30 +1093,58 @@ else
     echo "Try a smaller scale/resolution; Vivid's memory guard prevented macOS from exhausting unified memory." >&2
   fi
 
-  if [[ "$STATUS" -eq 0 && "$CONVERT_JXL" == "1" ]]; then
-    "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" <<'PY'
+  if [[ "$STATUS" -eq 0 && "$CONVERT_QUALITY_OUTPUT" == "1" ]]; then
+    "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" "$QUALITY" <<'PY'
 from pathlib import Path
 import sys
 import pillow_jxl
+import numpy as np
+import pyjpegxl
 from PIL import Image
 
 source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
+quality = int(sys.argv[3])
+
+
+def jxl_distance_from_quality(value: int) -> float:
+    if value >= 100:
+        return 0.0
+    if value >= 30:
+        return 0.1 + (100 - value) * 0.09
+    return (53.0 / 3000.0 * value * value) - (23.0 / 20.0 * value) + 25.0
+
+
 with Image.open(source) as image:
-    image.save(destination, quality=95)
+    image = image.convert("RGB")
+    if destination.suffix.lower() == ".jxl":
+        pyjpegxl.write_from_numpy(
+            destination,
+            np.asarray(image),
+            lossless=quality >= 100,
+            quality=jxl_distance_from_quality(quality),
+        )
+    else:
+        save_kwargs = {"quality": quality}
+        if destination.suffix.lower() in {".jpg", ".jpeg"}:
+            save_kwargs["subsampling"] = 0
+        image.save(destination, **save_kwargs)
 source.unlink(missing_ok=True)
 PY
   fi
 fi
 
-if [[ "$SHOW_PROGRESS" == "1" ]]; then
-  ELAPSED=$((SECONDS - START_SECONDS))
-  if [[ "$STATUS" -eq 0 ]]; then
-    printf '[3/3] Complete in %02d:%02d\n' "$((ELAPSED / 60))" "$((ELAPSED % 60))"
+ELAPSED=$((SECONDS - START_SECONDS))
+if [[ "$STATUS" -eq 0 ]]; then
+  printf '[3/3] Complete — total elapsed: %02d:%02d:%02d\n' \
+    "$((ELAPSED / 3600))" "$(((ELAPSED % 3600) / 60))" "$((ELAPSED % 60))"
+  if [[ "$SHOW_PROGRESS" == "1" ]]; then
     if [[ -n "$OUTPUT" ]]; then
       echo "      Saved: $OUTPUT"
     fi
-  else
+  fi
+else
+  if [[ "$SHOW_PROGRESS" == "1" ]]; then
     echo "[3/3] Vivid failed with exit code $STATUS" >&2
   fi
 fi

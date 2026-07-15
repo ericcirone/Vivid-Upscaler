@@ -62,6 +62,45 @@ enum OutputFormat: String, CaseIterable, Identifiable {
     func fileExtension(for inputURL: URL) -> String {
         self == .same ? inputURL.pathExtension.lowercased() : rawValue
     }
+
+    func supportsQuality(for inputURL: URL?) -> Bool {
+        let fileExtension: String
+        if self == .same {
+            guard let inputURL else { return false }
+            fileExtension = inputURL.pathExtension.lowercased()
+        } else {
+            fileExtension = rawValue
+        }
+        return ["jpg", "jpeg", "jxl", "webp"].contains(fileExtension)
+    }
+}
+
+enum OutputQualityPreset: Int, CaseIterable, Identifiable {
+    case low = 60
+    case medium = 75
+    case high = 85
+    case extraHigh = 90
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .low: "Low"
+        case .medium: "Med"
+        case .high: "High"
+        case .extraHigh: "X-High"
+        }
+    }
+
+    var index: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
+    }
+
+    static func nearest(to quality: Double) -> Self {
+        allCases.min {
+            abs(Double($0.rawValue) - quality) < abs(Double($1.rawValue) - quality)
+        } ?? .high
+    }
 }
 
 struct UpscaleOptions {
@@ -71,6 +110,7 @@ struct UpscaleOptions {
     var resolution: Int
     var maxResolution: Int
     var format: OutputFormat
+    var quality: Double
 
     var sizingToken: String {
         switch sizingKind {
@@ -84,7 +124,7 @@ struct UpscaleOptions {
 
     func outputURL(for inputURL: URL) -> URL {
         let ext = format.fileExtension(for: inputURL)
-        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(sizingToken).\(ext)"
+        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)-\(sizingToken).\(ext)"
         return inputURL.deletingLastPathComponent().appendingPathComponent(filename)
     }
 }

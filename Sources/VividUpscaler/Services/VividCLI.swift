@@ -28,6 +28,14 @@ actor VividCLI {
 
     private var process: Process?
 
+    static func modelDirectoryURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        runtimeRootURL(environment: environment, homeDirectory: homeDirectory)
+            .appendingPathComponent("models", isDirectory: true)
+    }
+
     func executableURL() -> URL? {
         let environment = ProcessInfo.processInfo.environment
         var candidates: [String] = []
@@ -84,6 +92,9 @@ actor VividCLI {
         case .resolution:
             arguments += ["--resolution", String(options.resolution), "--max-resolution", String(options.maxResolution)]
         }
+        if options.format.supportsQuality(for: input) {
+            arguments += ["--quality", String(Int(options.quality.rounded()))]
+        }
 
         try await run(arguments: arguments) { line in
             onEvent(Self.event(for: line))
@@ -123,10 +134,17 @@ actor VividCLI {
     }
 
     private func runtimeRoot() -> URL {
-        if let explicit = ProcessInfo.processInfo.environment["VIVID_HOME"], !explicit.isEmpty {
+        Self.runtimeRootURL(
+            environment: ProcessInfo.processInfo.environment,
+            homeDirectory: FileManager.default.homeDirectoryForCurrentUser
+        )
+    }
+
+    private static func runtimeRootURL(environment: [String: String], homeDirectory: URL) -> URL {
+        if let explicit = environment["VIVID_HOME"], !explicit.isEmpty {
             return URL(fileURLWithPath: NSString(string: explicit).expandingTildeInPath, isDirectory: true)
         }
-        return FileManager.default.homeDirectoryForCurrentUser
+        return homeDirectory
             .appendingPathComponent(".local/share/vivid", isDirectory: true)
     }
 
@@ -136,7 +154,7 @@ actor VividCLI {
         let version = try? String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("repo/inference_cli.py").path)
-            && version == "2"
+            && version == "6"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

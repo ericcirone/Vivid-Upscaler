@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @Bindable var store: UpscaleStore
     @State private var isDropTargeted = false
+    @State private var isShowingLog = false
 
     var body: some View {
         HSplitView {
@@ -30,6 +31,9 @@ struct ContentView: View {
         .sheet(isPresented: $store.showOnboarding) {
             ModelOnboardingView(store: store)
                 .interactiveDismissDisabled(store.installedModelIDs.isEmpty)
+        }
+        .sheet(isPresented: $isShowingLog) {
+            ProcessingLogView(store: store)
         }
         .alert("Vivid Upscaler", isPresented: Binding(
             get: { store.errorMessage != nil },
@@ -103,14 +107,23 @@ struct ContentView: View {
                     Spacer()
                     Button("Cancel", role: .destructive) { store.cancel() }
                 }
+                HStack {
+                    Button("View Full Log") { isShowingLog = true }
+                    Spacer()
+                }
             } else if store.completedOutputURL != nil {
                 HStack {
-                    Label("Upscale complete", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Label(completionLabel, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     Spacer()
                     Button("Show in Finder") { store.revealOutput() }
                 }
             }
         }
+    }
+
+    private var completionLabel: String {
+        guard let elapsed = store.formattedElapsedTime else { return "Upscale complete" }
+        return "Upscale complete in \(elapsed)"
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -122,5 +135,39 @@ struct ContentView: View {
             if let url { Task { @MainActor in store.selectInput(url) } }
         }
         return true
+    }
+}
+
+private struct ProcessingLogView: View {
+    @Bindable var store: UpscaleStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Processing Log").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(store.fullLog.isEmpty ? "Waiting for output…" : store.fullLog)
+                        .font(.system(.callout, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    Color.clear.frame(height: 1).id("log-bottom")
+                }
+                .onAppear { proxy.scrollTo("log-bottom", anchor: .bottom) }
+                .onChange(of: store.logLines.count) {
+                    proxy.scrollTo("log-bottom", anchor: .bottom)
+                }
+            }
+            .padding(10)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .padding(20)
+        .frame(minWidth: 620, minHeight: 380)
     }
 }

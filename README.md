@@ -78,7 +78,8 @@ vvd models delete normal
 ```
 
 Supported GUI output choices are the input format, PNG, JPG, JPEG XL, and WebP.
-JPEG XL support is installed through `pillow-jxl-plugin`.
+JPEG XL encoding uses the reference `libjxl` implementation through `pyjpegxl`;
+`pillow-jxl-plugin` provides JPEG XL input decoding.
 
 ## Modes
 

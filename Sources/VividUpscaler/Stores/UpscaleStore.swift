@@ -25,9 +25,12 @@ final class UpscaleStore {
     var resolution: Int { didSet { defaults.set(resolution, forKey: "resolution") } }
     var maxResolution: Int { didSet { defaults.set(maxResolution, forKey: "maxResolution") } }
     var format: OutputFormat { didSet { defaults.set(format.rawValue, forKey: "format") } }
+    var quality: Double { didSet { defaults.set(quality, forKey: "quality") } }
     var isRunning = false
     var progress: Double?
     var status = "Drop a photo to begin"
+    var logLines: [String] = []
+    var elapsedTime: TimeInterval?
     var errorMessage: String?
     var noticeMessage: String?
     var completedOutputURL: URL?
@@ -50,10 +53,40 @@ final class UpscaleStore {
         resolution = defaults.object(forKey: "resolution") == nil ? 2048 : defaults.integer(forKey: "resolution")
         maxResolution = defaults.object(forKey: "maxResolution") == nil ? 4096 : defaults.integer(forKey: "maxResolution")
         format = OutputFormat(rawValue: defaults.string(forKey: "format") ?? "") ?? .same
+        let savedQuality = defaults.object(forKey: "quality") == nil ? 90 : defaults.double(forKey: "quality")
+        quality = Double(OutputQualityPreset.nearest(to: savedQuality).rawValue)
     }
 
     var options: UpscaleOptions {
-        UpscaleOptions(mode: mode, sizingKind: sizingKind, scale: scale, resolution: resolution, maxResolution: maxResolution, format: format)
+        UpscaleOptions(
+            mode: mode,
+            sizingKind: sizingKind,
+            scale: scale,
+            resolution: resolution,
+            maxResolution: maxResolution,
+            format: format,
+            quality: quality
+        )
+    }
+
+    var supportsOutputQuality: Bool {
+        format.supportsQuality(for: inputURL)
+    }
+
+    var fullLog: String {
+        logLines.joined(separator: "\n")
+    }
+
+    var formattedElapsedTime: String? {
+        elapsedTime.map(Self.formatElapsedTime)
+    }
+
+    static func formatElapsedTime(_ elapsedTime: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(elapsedTime.rounded(.down)))
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 
     func canInstall(_ model: ModelInfo) -> Bool {
@@ -123,16 +156,24 @@ final class UpscaleStore {
             isRunning = true
             progress = 0
             status = "Starting Vivid"
+            logLines = [status]
+            elapsedTime = nil
             errorMessage = nil
             completedOutputURL = nil
+            let startedAt = Date()
             try await cli.upscale(input: inputURL, output: destination, options: options) { [weak self] event in
                 Task { @MainActor in
                     if let fraction = event.fraction { self?.progress = fraction }
                     self?.status = event.message
+                    self?.logLines.append(event.message)
                 }
             }
+            elapsedTime = Date().timeIntervalSince(startedAt)
             progress = 1
             status = "Upscale complete"
+            if let formattedElapsedTime {
+                logLines.append("Total elapsed: \(formattedElapsedTime)")
+            }
             completedOutputURL = destination
         } catch {
             errorMessage = error.localizedDescription

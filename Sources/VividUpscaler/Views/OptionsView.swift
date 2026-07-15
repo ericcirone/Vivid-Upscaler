@@ -41,7 +41,11 @@ struct OptionsView: View {
                 Picker("Output", selection: $store.format) {
                     ForEach(OutputFormat.allCases) { format in Text(format.title).tag(format) }
                 }
-                Text("Saved beside the original photo.").font(.caption).foregroundStyle(.secondary)
+                if store.supportsOutputQuality {
+                    QualitySlider(quality: $store.quality)
+                } else {
+                    Text("Saved beside the original photo.").font(.caption).foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -57,5 +61,66 @@ struct OptionsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct QualitySlider: View {
+    @Binding var quality: Double
+
+    private var selectedPreset: OutputQualityPreset {
+        .nearest(to: quality)
+    }
+
+    private var stopPosition: Binding<Double> {
+        Binding(
+            get: { Double(selectedPreset.index) },
+            set: { newValue in
+                let lastIndex = OutputQualityPreset.allCases.count - 1
+                let index = min(max(Int(newValue.rounded()), 0), lastIndex)
+                quality = Double(OutputQualityPreset.allCases[index].rawValue)
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Quality")
+
+            GeometryReader { geometry in
+                let stopCount = OutputQualityPreset.allCases.count
+                let trackInset: CGFloat = 10
+
+                Slider(
+                    value: stopPosition,
+                    in: 0...Double(stopCount - 1),
+                    step: 1
+                )
+                .frame(width: geometry.size.width)
+                .position(x: geometry.size.width / 2, y: 8)
+
+                ForEach(OutputQualityPreset.allCases) { preset in
+                    let fraction = CGFloat(preset.index) / CGFloat(stopCount - 1)
+                    let x = trackInset + ((geometry.size.width - (trackInset * 2)) * fraction)
+
+                    VStack(spacing: 1) {
+                        Text(preset.title)
+                        Text("\(preset.rawValue)%")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(preset == selectedPreset ? .primary : .secondary)
+                    .frame(width: 60)
+                    .position(x: x, y: 39)
+                }
+            }
+            .frame(height: 58)
+            .padding(.horizontal, 28)
+
+            Text("Saved beside the original photo.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .listRowSeparator(.hidden)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue("\(selectedPreset.title), \(selectedPreset.rawValue) percent")
     }
 }
