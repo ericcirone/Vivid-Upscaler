@@ -4,7 +4,6 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
     case fast
     case normal
     case normalHQ = "normal-hq"
-    case creative
     case advanced
     case maximum
 
@@ -15,7 +14,6 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         case .fast: "Fast"
         case .normal: "Normal"
         case .normalHQ: "Normal HQ"
-        case .creative: "Creative"
         case .advanced: "Advanced"
         case .maximum: "Maximum"
         }
@@ -23,11 +21,10 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
 
     var detail: String {
         switch self {
-        case .fast: "Fastest general-purpose upscaling"
-        case .normal: "Best balance for compressed or imperfect photos"
-        case .normalHQ: "Best for clean, high-quality source photos"
-        case .creative: "Aggressive generated detail; may alter identity-sensitive features"
-        case .advanced: "Faster SeedVR2 restoration with reduced memory use"
+        case .fast: "Quickest general-purpose MLX upscaling"
+        case .normal: "Main quality and speed balance"
+        case .normalHQ: "Photographic restoration for compression, blur, and noise"
+        case .advanced: "Native MLX SeedVR2 restoration with 8-bit weights"
         case .maximum: "Highest-quality SeedVR2 processing; slowest and most memory intensive"
         }
     }
@@ -35,7 +32,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
     var minimumRAMGB: Int {
         switch self {
         case .fast: 8
-        case .normal, .normalHQ, .creative, .advanced: 16
+        case .normal, .normalHQ, .advanced: 16
         case .maximum: 24
         }
     }

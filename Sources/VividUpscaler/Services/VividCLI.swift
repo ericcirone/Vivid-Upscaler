@@ -153,8 +153,8 @@ actor VividCLI {
         let versionURL = root.appendingPathComponent("runtime-version")
         let version = try? String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
-            && FileManager.default.fileExists(atPath: root.appendingPathComponent("repo/inference_cli.py").path)
-            && version == "10"
+            && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
+            && version == "11"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

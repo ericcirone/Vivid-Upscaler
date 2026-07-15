@@ -3,10 +3,9 @@ set -euo pipefail
 
 INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
-REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="10"
+RUNTIME_VERSION="11"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -15,25 +14,6 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 mkdir -p "$INSTALL_ROOT" "$BIN_DIR" "$MODEL_ROOT"
-
-if [[ -d "$REPO_DIR/.git" ]] && command -v git >/dev/null 2>&1; then
-  echo "Updating SeedVR2..."
-  git -C "$REPO_DIR" pull --ff-only
-elif [[ -f "$REPO_DIR/inference_cli.py" ]]; then
-  echo "Using installed SeedVR2 runtime..."
-elif command -v git >/dev/null 2>&1; then
-  echo "Cloning SeedVR2 CLI..."
-  git clone --depth 1 https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler.git "$REPO_DIR"
-else
-  echo "Downloading SeedVR2 CLI..."
-  ARCHIVE_DIR="$(mktemp -d)"
-  curl -L --fail --silent --show-error \
-    https://github.com/numz/ComfyUI-SeedVR2_VideoUpscaler/archive/refs/heads/main.tar.gz \
-    -o "$ARCHIVE_DIR/seedvr2.tar.gz"
-  mkdir -p "$REPO_DIR"
-  tar -xzf "$ARCHIVE_DIR/seedvr2.tar.gz" --strip-components=1 -C "$REPO_DIR"
-  rm -rf "$ARCHIVE_DIR"
-fi
 
 REQUIRED_PYTHON="3.12"
 CURRENT_PYTHON=""
@@ -55,9 +35,11 @@ fi
 
 echo "Installing dependencies..."
 uv pip install --python "$VENV_DIR/bin/python" --upgrade pip setuptools wheel
-uv pip install --python "$VENV_DIR/bin/python" torch torchvision torchaudio
-uv pip install --python "$VENV_DIR/bin/python" -r "$REPO_DIR/requirements.txt"
-uv pip install --python "$VENV_DIR/bin/python" pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" safetensors aura-sr
+uv pip install --python "$VENV_DIR/bin/python" torch torchvision
+uv pip install --python "$VENV_DIR/bin/python" \
+  "mflux==0.18.0" \
+  "realesrgan-mlx @ git+https://github.com/xocialize/realesrgan-mlx.git@52c0fc1044277900b995308095a1f3cc484a3581" \
+  pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" safetensors huggingface-hub
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 #!/usr/bin/env python3
@@ -76,9 +58,7 @@ from pathlib import Path
 
 import numpy as np
 import pyjpegxl
-import torch
-from PIL import Image, ImageOps
-from spandrel import ImageModelDescriptor, ModelLoader
+from PIL import Image, ImageOps, PngImagePlugin
 
 try:
     import pillow_jxl  # Registers JPEG XL support with Pillow.
@@ -87,47 +67,27 @@ except ImportError:
 
 MODELS = {
     "fast": {
-        "display_name": "realesr-general-x4v3",
-        "kind": "realesr",
-        "files": {
-            "main": {
-                "filename": "realesr-general-x4v3.pth",
-                "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
-            },
-            "wdn": {
-                "filename": "realesr-general-wdn-x4v3.pth",
-                "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth",
-            },
-        },
-        "download_dir": "realesrgan",
+        "display_name": "mlx-community/Real-ESRGAN-general-x4v3",
+        "kind": "mlx",
+        "variant": "realesr-general-x4v3",
+        "download_dir": "mlx/Real-ESRGAN-general-x4v3",
     },
     "normal": {
-        "display_name": "4xNomosWebPhoto_atd",
-        "kind": "single",
-        "files": {
-            "main": {
-                "filename": "4xNomosWebPhoto_atd.safetensors",
-                "url": "https://huggingface.co/Phips/4xNomosWebPhoto_atd/resolve/main/4xNomosWebPhoto_atd.safetensors",
-            }
-        },
-        "download_dir": "nomos",
+        "display_name": "mlx-community/Real-ESRGAN-x4plus",
+        "kind": "mlx",
+        "variant": "RealESRGAN_x4plus",
+        "download_dir": "mlx/Real-ESRGAN-x4plus",
     },
     "normal-hq": {
-        "display_name": "4xNomos2_hq_atd",
-        "kind": "single",
+        "display_name": "4xNomosWebPhoto_esrgan",
+        "kind": "spandrel",
         "files": {
             "main": {
-                "filename": "4xNomos2_hq_atd.safetensors",
-                "url": "https://huggingface.co/Phips/4xNomos2_hq_atd/resolve/main/4xNomos2_hq_atd.safetensors",
+                "filename": "4xNomosWebPhoto_esrgan.safetensors",
+                "url": "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.safetensors",
             }
         },
-        "download_dir": "nomos-hq",
-    },
-    "creative": {
-        "display_name": "AuraSR v2",
-        "kind": "aurasr",
-        "files": {"main": {"filename": "model.safetensors", "url": ""}},
-        "download_dir": "aurasr-v2",
+        "download_dir": "nomos-webphoto-esrgan",
     },
 }
 
@@ -409,10 +369,24 @@ def save_image(
     exif: Image.Exif | None,
     icc_profile: bytes | None,
     xmp: bytes | None,
+    source_info: dict[str, object] | None = None,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    source_info = source_info or {}
+    if isinstance(xmp, str):
+        xmp = xmp.encode("utf-8")
     save_kwargs: dict[str, object] = {}
     ext = destination.suffix.lower()
+    dpi = source_info.get("dpi")
+    if dpi and isinstance(dpi, tuple) and len(dpi) == 2:
+        if exif is None:
+            exif = Image.Exif()
+        if 282 not in exif:
+            exif[282] = float(dpi[0])
+        if 283 not in exif:
+            exif[283] = float(dpi[1])
+        if 296 not in exif:
+            exif[296] = 2
     exif_bytes = None
     if exif:
         # The pixels have already been physically transposed, so retain the
@@ -439,12 +413,26 @@ def save_image(
         save_kwargs["subsampling"] = 0
     elif ext == ".webp":
         save_kwargs["quality"] = quality
+    elif ext == ".png":
+        pnginfo = PngImagePlugin.PngInfo()
+        for key, value in source_info.items():
+            if key not in {"exif", "icc_profile", "xmp", "dpi"} and isinstance(value, str):
+                pnginfo.add_text(key, value)
+            elif key == "comment" and isinstance(value, bytes):
+                pnginfo.add_text(key, value.decode("utf-8", errors="replace"))
+        if xmp:
+            pnginfo.add_itxt("XML:com.adobe.xmp", xmp.decode("utf-8", errors="replace"))
+        save_kwargs["pnginfo"] = pnginfo
     if exif_bytes:
         save_kwargs["exif"] = exif_bytes
     if icc_profile:
         save_kwargs["icc_profile"] = icc_profile
-    if xmp:
+    if xmp and ext != ".png":
         save_kwargs["xmp"] = xmp
+    if dpi:
+        save_kwargs["dpi"] = dpi
+    if source_info.get("comment") and ext in {".jpg", ".jpeg", ".webp"}:
+        save_kwargs["comment"] = source_info["comment"]
     image.save(destination, **save_kwargs)
 
 
@@ -453,13 +441,15 @@ def main() -> int:
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("--model-root", required=True)
-    parser.add_argument("--mode", choices=["fast", "normal", "normal-hq", "creative"], required=True)
+    parser.add_argument("--mode", choices=["fast", "normal", "normal-hq"], required=True)
     parser.add_argument("--short-edge", type=int, required=True)
     parser.add_argument("--max-long-edge", type=int, required=True)
     parser.add_argument("--tile", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--system-ram-gb", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--denoise-strength", type=float, default=0.5)
     parser.add_argument("--quality", type=int, choices=range(1, 101), default=90, metavar="1-100")
+    parser.add_argument("--finalize-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--metadata-source", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if not 0 <= args.denoise_strength <= 1:
@@ -467,68 +457,39 @@ def main() -> int:
 
     input_path = Path(args.input)
     output_path = Path(args.output)
+    if args.finalize_only:
+        if not args.metadata_source:
+            parser.error("--finalize-only requires --metadata-source")
+        metadata_path = Path(args.metadata_source)
+        with Image.open(metadata_path) as opened:
+            exif = opened.getexif()
+            icc_profile = opened.info.get("icc_profile")
+            xmp = opened.info.get("xmp") or opened.info.get("XML:com.adobe.xmp")
+            source_info = dict(opened.info)
+            oriented_source = ImageOps.exif_transpose(opened)
+            target_size = compute_target_size(*oriented_source.size, args.short_edge, args.max_long_edge)
+        with Image.open(input_path) as processed:
+            result = processed.convert("RGB")
+            if result.size != target_size:
+                result = result.resize(target_size, Image.Resampling.LANCZOS)
+        save_image(result, output_path, args.quality, exif, icc_profile, xmp, source_info)
+        input_path.unlink(missing_ok=True)
+        return 0
+
     spec = MODELS[args.mode]
     model_dir = Path(args.model_root) / spec["download_dir"]
 
     print("[2/3] Upscaling", flush=True)
     print(f"      Mode:   {args.mode}", flush=True)
-    backend = "AuraSR" if spec["kind"] == "aurasr" else "Spandrel"
+    backend = "MLX" if spec["kind"] == "mlx" else "PyTorch MPS via Spandrel"
     print(f"      Model:  {spec['display_name']} via {backend}", flush=True)
     print("      Ensuring model weights...", flush=True)
 
-    if spec["kind"] == "aurasr":
-        from aura_sr import AuraSR
-        from safetensors.torch import load_file
-        model_path = model_dir / "model.safetensors"
-        if not model_path.exists() or not (model_dir / "config.json").exists():
-            raise RuntimeError("AuraSR v2 is not installed. Run: vvd models install creative")
-        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"      Device: {device}", flush=True)
-        print("      Loading model...", flush=True)
-        config = json.loads((model_dir / "config.json").read_text())
-        model = AuraSR(config, device=device)
-        model.upsampler.load_state_dict(load_file(str(model_path)), strict=True)
-        with Image.open(input_path) as opened:
-            source_format = opened.format
-            exif = opened.getexif()
-            icc_profile = opened.info.get("icc_profile")
-            xmp = opened.info.get("xmp")
-            image = ImageOps.exif_transpose(opened).convert("RGB")
-        target_width, target_height = compute_target_size(*image.size, args.short_edge, args.max_long_edge)
-        print("      Processing overlapped tiles...", flush=True)
-        result = model.upscale_4x_overlapped(image, max_batch_size=1)
-        if result.size != (target_width, target_height):
-            result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
-        print("      Saving output...", flush=True)
-        save_image(result, output_path, args.quality, exif, icc_profile, xmp)
-        return 0
-
-    selected_weight: Path
-    if spec["kind"] == "realesr":
-        main_weight = model_dir / spec["files"]["main"]["filename"]
-        wdn_weight = model_dir / spec["files"]["wdn"]["filename"]
-        download_if_missing(spec["files"]["main"]["url"], main_weight)
-        download_if_missing(spec["files"]["wdn"]["url"], wdn_weight)
-        selected_weight = blended_model_path(main_weight, wdn_weight, args.denoise_strength, model_dir)
-    else:
-        main_weight = model_dir / spec["files"]["main"]["filename"]
-        download_if_missing(spec["files"]["main"]["url"], main_weight)
-        selected_weight = main_weight
-
-    device = choose_device()
-    print(f"      Device: {device}", flush=True)
-    print("      Loading model...", flush=True)
-    model = ModelLoader().load_from_file(selected_weight)
-    if not isinstance(model, ImageModelDescriptor):
-        raise RuntimeError("The downloaded model is not an image-to-image model")
-    model.to(device).eval()
-    native_scale = int(model.scale)
-
     with Image.open(input_path) as opened:
-        source_format = opened.format
         exif = opened.getexif()
         icc_profile = opened.info.get("icc_profile")
-        xmp = opened.info.get("xmp")
+        xmp = opened.info.get("xmp") or opened.info.get("XML:com.adobe.xmp")
+        source_info = dict(opened.info)
         image = ImageOps.exif_transpose(opened).convert("RGB")
 
     width, height = image.size
@@ -537,24 +498,52 @@ def main() -> int:
         args.tile,
         width,
         height,
-        native_scale,
+        4,
         args.mode,
         args.system_ram_gb,
     )
     tile_note = "off" if tile_size == 0 else f"on ({tile_size}px)"
     print(f"      Source: {width}x{height}", flush=True)
     print(f"      Target: {target_width}x{target_height}", flush=True)
-    print(f"      Native model output: {width * native_scale}x{height * native_scale}", flush=True)
+    print(f"      Native model output: {width * 4}x{height * 4}", flush=True)
     print(f"      Tiling: {tile_note}", flush=True)
     if args.mode == "fast":
         print(f"      Denoise strength: {args.denoise_strength}", flush=True)
 
-    input_tensor = pil_to_tensor(image)
-    if tile_size:
-        native_output = infer_tiled(model, input_tensor, device, native_scale, tile_size)
+    if spec["kind"] == "mlx":
+        from realesrgan_mlx.pipeline_mlx import make_upsampler
+        if not (model_dir / "model.safetensors").exists():
+            raise RuntimeError(f"{spec['display_name']} is not installed. Run: vvd models install {args.mode}")
+        print("      Device: MLX", flush=True)
+        print("      Loading model...", flush=True)
+        upsampler = make_upsampler(
+            spec["variant"],
+            denoise_strength=args.denoise_strength if args.mode == "fast" else 1.0,
+            tile=tile_size,
+            tile_pad=24,
+            weights_dir=str(model_dir),
+        )
+        native_output, _ = upsampler.enhance(np.asarray(image))
     else:
-        print("      Processing full image...", flush=True)
-        native_output = infer_full(model, input_tensor, device)
+        global torch, ImageModelDescriptor, ModelLoader
+        import torch
+        from spandrel import ImageModelDescriptor, ModelLoader
+        selected_weight = model_dir / spec["files"]["main"]["filename"]
+        if not selected_weight.exists():
+            raise RuntimeError(f"{spec['display_name']} is not installed. Run: vvd models install normal-hq")
+        device = choose_device()
+        print(f"      Device: {device}", flush=True)
+        print("      Loading model...", flush=True)
+        model = ModelLoader().load_from_file(selected_weight)
+        if not isinstance(model, ImageModelDescriptor):
+            raise RuntimeError("The downloaded model is not an image-to-image model")
+        model.to(device).eval()
+        input_tensor = pil_to_tensor(image)
+        if tile_size:
+            native_output = infer_tiled(model, input_tensor, device, int(model.scale), tile_size)
+        else:
+            print("      Processing full image...", flush=True)
+            native_output = infer_full(model, input_tensor, device)
 
     result = Image.fromarray(native_output, mode="RGB")
     if result.size != (target_width, target_height):
@@ -562,7 +551,7 @@ def main() -> int:
         result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
     print("      Saving output...", flush=True)
-    save_image(result, output_path, args.quality, exif, icc_profile, xmp)
+    save_image(result, output_path, args.quality, exif, icc_profile, xmp, source_info)
     return 0
 
 
@@ -577,7 +566,6 @@ set -euo pipefail
 
 INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 PYTHON="$INSTALL_ROOT/venv/bin/python"
-CLI="$INSTALL_ROOT/repo/inference_cli.py"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/vivid_upscale.py" ]]; then
   UPSCALE_HELPER="$SCRIPT_DIR/vivid_upscale.py"
@@ -590,21 +578,15 @@ ORIGINAL_CWD="$PWD"
 model_is_installed() {
   case "$1" in
     fast)
-      [[ -f "$MODEL_ROOT/realesrgan/realesr-general-x4v3.pth" && -f "$MODEL_ROOT/realesrgan/realesr-general-wdn-x4v3.pth" ]]
+      [[ -f "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3/model.safetensors" && -f "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3/model_wdn.safetensors" && -f "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3/config.json" ]]
       ;;
     normal)
-      [[ -f "$MODEL_ROOT/nomos/4xNomosWebPhoto_atd.safetensors" ]]
+      [[ -f "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus/model.safetensors" && -f "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus/config.json" ]]
       ;;
     normal-hq)
-      [[ -f "$MODEL_ROOT/nomos-hq/4xNomos2_hq_atd.safetensors" ]]
+      [[ -f "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors" ]]
       ;;
-    creative)
-      [[ -f "$MODEL_ROOT/aurasr-v2/model.safetensors" && -f "$MODEL_ROOT/aurasr-v2/config.json" ]]
-      ;;
-    advanced)
-      [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
-      ;;
-    maximum)
+    advanced|maximum)
       [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
       ;;
     *) return 1 ;;
@@ -660,7 +642,7 @@ system_ram_gb() {
 minimum_ram_for_model() {
   case "$1" in
     fast) echo 8 ;;
-    normal|normal-hq|creative|advanced) echo 16 ;;
+    normal|normal-hq|advanced) echo 16 ;;
     maximum) echo 24 ;;
     *) echo 0 ;;
   esac
@@ -670,16 +652,15 @@ if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; NORMAL_HQ=false; CREATIVE=false; ADVANCED=false; MAXIMUM=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
         model_is_installed normal-hq && NORMAL_HQ=true
-        model_is_installed creative && CREATIVE=true
         model_is_installed advanced && ADVANCED=true
         model_is_installed maximum && MAXIMUM=true
-        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"creative":%s,"advanced":%s,"maximum":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$CREATIVE" "$ADVANCED" "$MAXIMUM"
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM"
       else
-        for MODEL_ID in fast normal normal-hq creative advanced maximum; do
+        for MODEL_ID in fast normal normal-hq advanced maximum; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -704,39 +685,29 @@ if [[ "${1:-}" == "models" ]]; then
       case "$MODEL_ID" in
         fast)
           download_model_file \
-            "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth" \
-            "$MODEL_ROOT/realesrgan/realesr-general-x4v3.pth"
+            "https://huggingface.co/mlx-community/Real-ESRGAN-general-x4v3/resolve/main/model.safetensors" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3/model.safetensors"
           download_model_file \
-            "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-wdn-x4v3.pth" \
-            "$MODEL_ROOT/realesrgan/realesr-general-wdn-x4v3.pth"
+            "https://huggingface.co/mlx-community/Real-ESRGAN-general-x4v3/resolve/main/model_wdn.safetensors" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3/model_wdn.safetensors"
+          download_model_file \
+            "https://huggingface.co/mlx-community/Real-ESRGAN-general-x4v3/resolve/main/config.json" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3/config.json"
           ;;
         normal)
           download_model_file \
-            "https://huggingface.co/Phips/4xNomosWebPhoto_atd/resolve/main/4xNomosWebPhoto_atd.safetensors" \
-            "$MODEL_ROOT/nomos/4xNomosWebPhoto_atd.safetensors"
+            "https://huggingface.co/mlx-community/Real-ESRGAN-x4plus/resolve/main/model.safetensors" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus/model.safetensors"
+          download_model_file \
+            "https://huggingface.co/mlx-community/Real-ESRGAN-x4plus/resolve/main/config.json" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus/config.json"
           ;;
         normal-hq)
           download_model_file \
-            "https://huggingface.co/Phips/4xNomos2_hq_atd/resolve/main/4xNomos2_hq_atd.safetensors" \
-            "$MODEL_ROOT/nomos-hq/4xNomos2_hq_atd.safetensors"
+            "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.safetensors" \
+            "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors"
           ;;
-        creative)
-          download_model_file \
-            "https://huggingface.co/fal/AuraSR-v2/resolve/main/model.safetensors" \
-            "$MODEL_ROOT/aurasr-v2/model.safetensors"
-          download_model_file \
-            "https://huggingface.co/fal/AuraSR-v2/resolve/main/config.json" \
-            "$MODEL_ROOT/aurasr-v2/config.json"
-          ;;
-        advanced)
-          download_model_file \
-            "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp8_e4m3fn.safetensors" \
-            "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors"
-          download_model_file \
-            "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/ema_vae_fp16.safetensors" \
-            "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
-          ;;
-        maximum)
+        advanced|maximum)
           download_model_file \
             "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp16.safetensors" \
             "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors"
@@ -745,7 +716,7 @@ if [[ "${1:-}" == "models" ]]; then
             "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
           ;;
         *)
-          echo "Usage: vvd models install fast|normal|normal-hq|creative|advanced|maximum" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum" >&2
           exit 2
           ;;
       esac
@@ -755,17 +726,12 @@ if [[ "${1:-}" == "models" ]]; then
     delete)
       MODEL_ID="${3:-}"
       case "$MODEL_ID" in
-        fast) rm -rf "$MODEL_ROOT/realesrgan" ;;
-        normal) rm -rf "$MODEL_ROOT/nomos" ;;
-        normal-hq) rm -rf "$MODEL_ROOT/nomos-hq" ;;
-        creative) rm -rf "$MODEL_ROOT/aurasr-v2" ;;
-        advanced) rm -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors" ;;
-        maximum) rm -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" ;;
-        *) echo "Usage: vvd models delete fast|normal|normal-hq|creative|advanced|maximum" >&2; exit 2 ;;
+        fast) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3" ;;
+        normal) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus" ;;
+        normal-hq) rm -rf "$MODEL_ROOT/nomos-webphoto-esrgan" ;;
+        advanced|maximum) rm -rf "$MODEL_ROOT/SEEDVR2" ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum" >&2; exit 2 ;;
       esac
-      if ! model_is_installed advanced && ! model_is_installed maximum; then
-        rm -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
-      fi
       echo "Deleted model: $MODEL_ID"
       exit 0
       ;;
@@ -787,45 +753,41 @@ Examples:
   vvd photo.jpg enhanced.png --mode fast --scale 2
   vvd photo.jpg enhanced.png --mode normal --scale 2
   vvd photo.jpg enhanced.png --mode advanced --scale 2
-  vvd ./photos ./enhanced --mode advanced --resolution 2048
   vvd models status
   vvd models install normal
 
 Modes:
-  fast      Fastest photographic upscaling with realesr-general-x4v3.
-  normal    General photographic restoration with 4xNomosWebPhoto_atd. Default.
-  normal-hq Clean source photography with 4xNomos2_hq_atd.
-  creative  Aggressive generated detail with AuraSR v2.
-  advanced  Reduced-memory SeedVR2 3B FP8 restoration.
-  maximum   Highest-quality SeedVR2 3B FP16 restoration.
+  fast      Quickest upscaling with Real-ESRGAN general x4v3 via MLX.
+  normal    Main quality/speed balance with Real-ESRGAN x4plus via MLX. Default.
+  normal-hq Photographic restoration with 4xNomosWebPhoto_esrgan via Spandrel MPS.
+  advanced  Native MLX SeedVR2 3B restoration with 8-bit quantization.
+  maximum   Native MLX SeedVR2 3B restoration at source precision.
 
 Options:
-  --mode MODE                  fast, normal, normal-hq, creative, advanced, or maximum
+  --mode MODE                  fast, normal, normal-hq, advanced, or maximum
   --fast                       Alias for --mode fast
   --normal                     Alias for --mode normal
   --advanced                   Alias for --mode advanced
-  --model 3b|7b                SeedVR2 model size for advanced mode. Default: 3b
   --scale N                    Multiply the source width and height by N. Files only.
   --resolution N               Target short edge in pixels. Default: 2048
   --max-resolution N           Maximum long edge. Default: 4096
   --tile auto|on|off           Tiling behavior. Default: auto
   --denoise-strength N         Fast mode denoise balance from 0 to 1. Default: 0.5
   --quality N                  JPG, JPEG XL, or WebP quality from 1 to 100. Default: 90
-  --seed N                     Random seed for advanced mode. Default: 42
+  --seed N                     Random seed for SeedVR2 modes. Default: 42
   --progress-interval N        Seconds between elapsed-time updates. Default: 10
   --no-progress                Disable wrapper progress messages
   --help                       Show this help
 
 A bare output filename such as output.jpg is saved beside the input file.
 Use ./output.jpg to explicitly save in the current working directory.
-Any unrecognized arguments are passed through to SeedVR2 in advanced mode.
 The first run downloads model weights and can use significant disk space.
 Models are stored under ~/.local/share/vivid/models by default.
 HELP
   exit 0
 fi
 
-if [[ ! -x "$PYTHON" || ! -f "$CLI" || ! -f "$UPSCALE_HELPER" ]]; then
+if [[ ! -x "$PYTHON" || ! -f "$UPSCALE_HELPER" ]]; then
   echo "Vivid's runtime is not installed. Open Vivid Upscaler or run install.sh." >&2
   exit 1
 fi
@@ -849,7 +811,6 @@ if [[ $# -gt 0 && "$1" != --* ]]; then
 fi
 
 MODE="normal"
-MODEL="3b"
 RESOLUTION="2048"
 MAX_RESOLUTION="4096"
 SCALE=""
@@ -859,7 +820,6 @@ PROGRESS_INTERVAL="10"
 TILE_MODE="auto"
 DENOISE_STRENGTH="0.5"
 QUALITY="90"
-PASSTHROUGH=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -883,17 +843,13 @@ while [[ $# -gt 0 ]]; do
       MODE="normal-hq"
       shift
       ;;
-    --creative)
-      MODE="creative"
-      shift
-      ;;
     --maximum)
       MODE="maximum"
       shift
       ;;
     --model)
-      MODEL="${2:?Missing value for --model}"
-      shift 2
+      echo "Vivid only supports SeedVR2 3B; --model is not available." >&2
+      exit 2
       ;;
     --scale|--multiplier)
       SCALE="${2:?Missing value for $1}"
@@ -935,16 +891,16 @@ while [[ $# -gt 0 ]]; do
       exec "$0"
       ;;
     *)
-      PASSTHROUGH+=("$1")
-      shift
+      echo "Unknown option: $1" >&2
+      exit 2
       ;;
   esac
 done
 
 case "$MODE" in
-  fast|normal|normal-hq|creative|advanced|maximum) ;;
+  fast|normal|normal-hq|advanced|maximum) ;;
   *)
-    echo "--mode must be fast, normal, normal-hq, creative, advanced, or maximum" >&2
+    echo "--mode must be fast, normal, normal-hq, advanced, or maximum" >&2
     exit 2
     ;;
 esac
@@ -958,12 +914,6 @@ fi
 if [[ "$MODE" == "fast" && "$TILE_MODE" == "auto" && "$AVAILABLE_RAM" -gt 0 && "$AVAILABLE_RAM" -le 8 ]]; then
   TILE_MODE="on"
 fi
-
-case "$MODE" in
-  advanced) DIT_MODEL="seedvr2_ema_3b_fp8_e4m3fn.safetensors" ;;
-  maximum) DIT_MODEL="seedvr2_ema_3b_fp16.safetensors" ;;
-  *) DIT_MODEL="seedvr2_ema_3b_fp16.safetensors" ;;
-esac
 
 case "$TILE_MODE" in
   auto|on|off) ;;
@@ -992,6 +942,19 @@ if [[ -n "$OUTPUT" ]]; then
   else
     OUTPUT="$(make_abs_path "$OUTPUT")"
   fi
+fi
+if [[ ! -f "$INPUT" ]]; then
+  echo "Vivid currently requires a single input image." >&2
+  exit 2
+fi
+if [[ -z "$OUTPUT" ]]; then
+  OUTPUT="$($PYTHON - "$INPUT" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+print(str(p.with_name(f"{p.stem}_upscaled{p.suffix}")))
+PY
+)"
 fi
 
 mkdir -p "$MODEL_ROOT"
@@ -1030,56 +993,27 @@ fi
 
 ADVANCED_TILE_NOTE="off"
 if [[ "$MODE" == "advanced" || "$MODE" == "maximum" ]]; then
-  ADVANCED_TILE_NOTE="$($PYTHON - "$MODEL" "$TILE_MODE" "$RESOLUTION" "$MAX_RESOLUTION" <<'PY'
+  ADVANCED_TILE_NOTE="$($PYTHON - "$TILE_MODE" "$RESOLUTION" "$MAX_RESOLUTION" <<'PY'
 import sys
-model = sys.argv[1]
-tile_mode = sys.argv[2]
-short_edge = int(sys.argv[3])
-long_edge = int(sys.argv[4])
+tile_mode = sys.argv[1]
+short_edge = int(sys.argv[2])
+long_edge = int(sys.argv[3])
 megapixels = short_edge * long_edge / 1_000_000
 if tile_mode == 'on':
     print('on')
 elif tile_mode == 'off':
     print('off')
 else:
-    # The untiled SeedVR VAE can ask Metal for a single buffer many times larger
-    # than the finished image. Keep auto mode safe on unified-memory Macs.
+    # MFLUX low-RAM mode releases the transformer before VAE decode. Keep auto
+    # mode safe on unified-memory Macs.
     print('on')
 PY
 )"
 fi
 
-ARGS=(
-  "$INPUT"
-  --dit_model "$DIT_MODEL"
-  --resolution "$RESOLUTION"
-  --max_resolution "$MAX_RESOLUTION"
-  --seed "$SEED"
-  --batch_size 1
-)
-
 PROCESSING_OUTPUT="$OUTPUT"
-CONVERT_QUALITY_OUTPUT="0"
-OUTPUT_EXTENSION="${OUTPUT##*.}"
-OUTPUT_EXTENSION="$(printf '%s' "$OUTPUT_EXTENSION" | tr '[:upper:]' '[:lower:]')"
-if [[ ( "$MODE" == "advanced" || "$MODE" == "maximum" ) && -n "$OUTPUT" && "$OUTPUT_EXTENSION" =~ ^(jpg|jpeg|jxl|webp)$ ]]; then
+if [[ ( "$MODE" == "advanced" || "$MODE" == "maximum" ) && -n "$OUTPUT" ]]; then
   PROCESSING_OUTPUT="${OUTPUT%.*}.vivid-temp.png"
-  CONVERT_QUALITY_OUTPUT="1"
-fi
-
-if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
-  ARGS+=(
-    --vae_encode_tiled
-    --vae_encode_tile_size 512
-    --vae_encode_tile_overlap 64
-    --vae_decode_tiled
-    --vae_decode_tile_size 512
-    --vae_decode_tile_overlap 64
-  )
-fi
-
-if [[ -n "$PROCESSING_OUTPUT" ]]; then
-  ARGS+=(--output "$PROCESSING_OUTPUT")
 fi
 
 # A value of 0.0 disables PyTorch's MPS allocation guard and can make macOS
@@ -1116,33 +1050,28 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
   echo "      Mode:   $MODE"
   case "$MODE" in
     advanced)
-      echo "      Model:  SeedVR2 3B FP8"
+      echo "      Model:  SeedVR2 3B 8-bit via native MLX"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
       ;;
     maximum)
-      echo "      Model:  SeedVR2 3B FP16"
+      echo "      Model:  SeedVR2 3B source precision via native MLX"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
       ;;
     normal)
-      echo "      Model:  4xNomosWebPhoto_atd"
-      echo "      Model files: $MODEL_ROOT/nomos"
+      echo "      Model:  mlx-community/Real-ESRGAN-x4plus"
+      echo "      Model files: $MODEL_ROOT/mlx/Real-ESRGAN-x4plus"
       echo "      Tiling: $TILE_MODE"
       ;;
     normal-hq)
-      echo "      Model:  4xNomos2_hq_atd"
-      echo "      Model files: $MODEL_ROOT/nomos-hq"
+      echo "      Model:  4xNomosWebPhoto_esrgan via PyTorch MPS/Spandrel"
+      echo "      Model files: $MODEL_ROOT/nomos-webphoto-esrgan"
       echo "      Tiling: $TILE_MODE"
       ;;
-    creative)
-      echo "      Model:  AuraSR v2"
-      echo "      Model files: $MODEL_ROOT/aurasr-v2"
-      echo "      Tiling: auto"
-      ;;
     fast)
-      echo "      Model:  realesr-general-x4v3"
-      echo "      Model files: $MODEL_ROOT/realesrgan"
+      echo "      Model:  mlx-community/Real-ESRGAN-general-x4v3"
+      echo "      Model files: $MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3"
       echo "      Tiling: $TILE_MODE"
       echo "      Denoise strength: $DENOISE_STRENGTH"
       ;;
@@ -1152,17 +1081,7 @@ fi
 
 START_SECONDS=$SECONDS
 
-if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" || "$MODE" == "creative" ]]; then
-  if [[ -z "$OUTPUT" ]]; then
-    OUTPUT="$($PYTHON - "$INPUT" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-print(str(p.with_name(f"{p.stem}_upscaled{p.suffix}")))
-PY
-)"
-  fi
-
+if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; then
   set +e
   "$PYTHON" -u "$UPSCALE_HELPER" \
     "$INPUT" "$OUTPUT" \
@@ -1183,11 +1102,20 @@ else
     echo "[2/3] Upscaling"
   fi
 
-  if (( ${#PASSTHROUGH[@]} > 0 )); then
-    "$PYTHON" -u "$CLI" "${ARGS[@]}" "${PASSTHROUGH[@]}" &
-  else
-    "$PYTHON" -u "$CLI" "${ARGS[@]}" &
+  MFLUX_ARGS=(
+    --image-path "$INPUT"
+    --model "$MODEL_ROOT/SEEDVR2"
+    --resolution "$RESOLUTION"
+    --seed "$SEED"
+    --output "$PROCESSING_OUTPUT"
+  )
+  if [[ "$MODE" == "advanced" ]]; then
+    MFLUX_ARGS+=(--quantize 8)
   fi
+  if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
+    MFLUX_ARGS+=(--low-ram)
+  fi
+  "$PYTHON" -u -m mflux.models.seedvr2.cli.seedvr2_upscale "${MFLUX_ARGS[@]}" &
   CHILD_PID=$!
 
   forward_signal() {
@@ -1216,118 +1144,19 @@ else
     echo "Try a smaller scale/resolution; Vivid's memory guard prevented macOS from exhausting unified memory." >&2
   fi
 
-  if [[ "$STATUS" -eq 0 && "$CONVERT_QUALITY_OUTPUT" == "1" ]]; then
-    "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" "$QUALITY" "$INPUT" <<'PY'
-from pathlib import Path
-import os
-import shutil
-import subprocess
-import sys
-import tempfile
-import pillow_jxl
-import numpy as np
-import pyjpegxl
-from PIL import Image
-
-source = Path(sys.argv[1])
-destination = Path(sys.argv[2])
-quality = int(sys.argv[3])
-metadata_source = Path(sys.argv[4])
-
-
-def jxl_distance_from_quality(value: int) -> float:
-    if value >= 100:
-        return 0.0
-    if value >= 30:
-        return 0.1 + (100 - value) * 0.09
-    return (53.0 / 3000.0 * value * value) - (23.0 / 20.0 * value) + 25.0
-
-
-def jxl_exif_box(exif: Image.Exif | None) -> bytes | None:
-    if not exif:
-        return None
-    exif[274] = 1
-    payload = exif.tobytes()
-    if payload.startswith(b"Exif\x00\x00"):
-        payload = payload[6:]
-    return b"\x00\x00\x00\x00" + payload
-
-
-def cjxl_executable() -> Path | None:
-    candidates = [
-        os.environ.get("CJXL"),
-        shutil.which("cjxl"),
-        "/opt/homebrew/bin/cjxl",
-        "/usr/local/bin/cjxl",
-    ]
-    for candidate in candidates:
-        if candidate and os.access(candidate, os.X_OK):
-            return Path(candidate)
-    return None
-
-
-def save_color_managed_jxl(
-    image: Image.Image,
-    destination: Path,
-    quality: int,
-    exif: Image.Exif | None,
-    icc_profile: bytes,
-    xmp: bytes | None,
-) -> None:
-    executable = cjxl_executable()
-    if executable is None:
-        raise RuntimeError(
-            "JPEG XL output cannot retain this image's ICC color profile because cjxl is not installed. "
-            "Install it with: brew install jpeg-xl"
-        )
-    with tempfile.TemporaryDirectory(prefix="vivid-jxl-") as temporary_directory:
-        temporary_root = Path(temporary_directory)
-        pixels_path = temporary_root / "pixels.png"
-        image.save(pixels_path, format="PNG", icc_profile=icc_profile)
-        arguments = [
-            str(executable), str(pixels_path), str(destination),
-            # App quality presets are below 100, so cjxl uses lossy VarDCT.
-            "-q", str(quality), "--container=1",
-        ]
-        if exif_box := jxl_exif_box(exif):
-            exif_path = temporary_root / "exif.tiff"
-            exif_path.write_bytes(exif_box[4:])
-            arguments += ["-x", f"exif={exif_path}"]
-        if xmp:
-            xmp_path = temporary_root / "xmp.xml"
-            xmp_path.write_bytes(xmp)
-            arguments += ["-x", f"xmp={xmp_path}"]
-        completed = subprocess.run(arguments, capture_output=True, text=True)
-        if completed.returncode != 0:
-            message = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(message or "cjxl failed to encode the output image")
-
-
-with Image.open(source) as image:
-    image = image.convert("RGB")
-    if destination.suffix.lower() == ".jxl":
-        with Image.open(metadata_source) as original:
-            exif = original.getexif()
-            xmp = original.info.get("xmp")
-            icc_profile = original.info.get("icc_profile")
-        if icc_profile:
-            save_color_managed_jxl(image, destination, quality, exif, icc_profile, xmp)
-        else:
-            pyjpegxl.write_from_numpy(
-                destination,
-                np.asarray(image),
-                lossless=quality >= 100,
-                quality=jxl_distance_from_quality(quality),
-                exif=jxl_exif_box(exif),
-                xmp=xmp,
-            )
-    else:
-        save_kwargs = {"quality": quality}
-        if destination.suffix.lower() in {".jpg", ".jpeg"}:
-            save_kwargs["subsampling"] = 0
-        image.save(destination, **save_kwargs)
-source.unlink(missing_ok=True)
-PY
+  if [[ "$STATUS" -eq 0 ]]; then
+    set +e
+    "$PYTHON" -u "$UPSCALE_HELPER" \
+      "$PROCESSING_OUTPUT" "$OUTPUT" \
+      --model-root "$MODEL_ROOT" \
+      --mode fast \
+      --short-edge "$RESOLUTION" \
+      --max-long-edge "$MAX_RESOLUTION" \
+      --quality "$QUALITY" \
+      --finalize-only \
+      --metadata-source "$INPUT"
+    STATUS=$?
+    set -e
   fi
 fi
 
@@ -1354,7 +1183,6 @@ printf '%s\n' "$RUNTIME_VERSION" > "$INSTALL_ROOT/runtime-version"
 
 echo
 echo "Installed: $BIN_DIR/vvd"
-echo "Repo:      $REPO_DIR"
 echo "Venv:      $VENV_DIR"
 echo "Models:    $MODEL_ROOT"
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then

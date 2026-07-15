@@ -3,16 +3,15 @@
 Vivid is a native Mac photo upscaler with an optional Terminal command.
 The app bundles the CLI, so both surfaces execute the same models and processing pipeline.
 
-The six modes are:
+The five modes are:
 
-| Mode | Model | Minimum RAM | Recommended RAM | Large Image RAM | Default Tiling | Intended use |
-| --- | --- | ---: | ---: | ---: | --- | --- |
-| `fast` | `realesr-general-x4v3` | 8 GB | 16 GB | 24 GB | `auto` | Fastest general-purpose upscaling. Tiling is forced on 8 GB systems. |
-| `normal` | `4xNomosWebPhoto_atd` | 16 GB | 16 GB | 24 GB | `auto` | Best balance for compressed, resized, noisy, or slightly blurry photographs. |
-| `normal-hq` | `4xNomos2_hq_atd` | 16 GB | 16 GB | 24 GB | `auto` | Best for clean camera originals and high-quality source photographs. |
-| `creative` | `AuraSR v2` | 16 GB | 24 GB | 32 GB | `auto` | Aggressive generated detail that may alter identity-sensitive details. |
-| `advanced` | `SeedVR2 3B FP8` | 16 GB | 24 GB | 32 GB | `auto` | Faster SeedVR2 restoration with reduced memory use. |
-| `maximum` | `SeedVR2 3B FP16` | 24 GB | 32 GB | 48 GB | `auto` | Highest-quality and most memory-intensive SeedVR2 processing. |
+| Mode | Model | Backend | Minimum RAM | Recommended RAM | Large Image RAM | Default Tiling | Intended use |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- |
+| `fast` | `mlx-community/Real-ESRGAN-general-x4v3` | MLX | 8 GB | 16 GB | 24 GB | `auto` | Quickest option: a compact native FP16 MLX upscaler for Apple Silicon. |
+| `normal` | `mlx-community/Real-ESRGAN-x4plus` | MLX | 16 GB | 16 GB | 24 GB | `auto` | Main quality and speed balance with a stronger conventional single-pass upscaler. |
+| `normal-hq` | `4xNomosWebPhoto_esrgan` | PyTorch MPS via Spandrel | 16 GB | 16 GB | 24 GB | `auto` | Fast photographic restoration for compression, lens blur, noise, and Web/JPEG sources. |
+| `advanced` | `SeedVR2 3B 8-bit` | Native MLX | 16 GB | 24 GB | 32 GB | `auto` | Difficult restoration jobs where a longer wait is acceptable. |
+| `maximum` | `SeedVR2 3B source precision` | Native MLX | 24 GB | 32 GB | 48 GB | `auto` | Highest-quality and slowest option. |
 
 The command name is:
 
@@ -70,7 +69,6 @@ vvd input.jpg output.jpg --scale 2
 vvd input.jpg output.jpg --mode fast --scale 2
 vvd input.jpg output.jpg --mode normal --scale 2
 vvd input.jpg output.jpg --mode advanced --scale 2
-vvd ./input-folder ./output-folder --mode advanced --resolution 2048
 vvd models status
 vvd models status --json
 vvd models install normal
@@ -80,28 +78,26 @@ vvd models delete normal
 Supported GUI output choices are the input format, PNG, JPG, JPEG XL, and WebP.
 JPEG XL encoding uses the reference `libjxl` implementation through `pyjpegxl`;
 `pillow-jxl-plugin` provides JPEG XL input decoding.
-When a source image contains an ICC color profile, Vivid uses `cjxl` in lossless
-mode so the decoded JXL retains that exact profile instead of switching to
-sRGB. Install the reference encoder with `brew install jpeg-xl` if it is not
-already available.
+Every pipeline uses the same final encoder, which preserves EXIF, XMP, DPI,
+comments where the destination supports them, and the source ICC color profile
+for PNG, JPG, JPEG XL, and WebP. Orientation is normalized after the source
+pixels are physically rotated. Vivid refuses color-managed JPEG XL output when
+`cjxl` is unavailable instead of silently dropping or replacing the profile;
+install it with `brew install jpeg-xl`.
 
 ## Modes
 
 ### Fast
 
-Uses `realesr-general-x4v3` for the quickest photo upscaling.
+Uses `mlx-community/Real-ESRGAN-general-x4v3` through native MLX for the quickest photo upscaling.
 
 ### Normal and Normal HQ
 
-Normal uses `4xNomosWebPhoto_atd` for imperfect or compressed photographs and is the default. Normal HQ uses `4xNomos2_hq_atd` for clean source photographs.
-
-### Creative
-
-Uses AuraSR v2 for more aggressive generated detail.
+Normal uses `mlx-community/Real-ESRGAN-x4plus` through native MLX and is the default. Normal HQ uses `4xNomosWebPhoto_esrgan` through PyTorch MPS and Spandrel for photographic restoration.
 
 ### Advanced and Maximum
 
-Advanced uses SeedVR2 3B FP8. Maximum uses SeedVR2 3B FP16 for the highest quality at a substantially higher memory cost.
+Both modes use MFLUX's native MLX SeedVR2 implementation and are locked to the 3B model. Advanced quantizes it to 8-bit at load time. Maximum keeps the source precision. Vivid never selects or exposes SeedVR2 7B.
 
 ## Tiling
 
@@ -115,10 +111,10 @@ The wrapper supports:
 
 Default is `auto`.
 
-- In **fast**, **normal**, and **normal-hq** mode, auto turns tiling on for larger outputs. Normal and Normal HQ use larger tiles on Macs with at least 24 GB RAM to reduce overlap and model invocations without resizing the source. Fast forces tiling on 8 GB systems.
-- **Creative** uses AuraSR's overlapped tiles.
-- In **advanced** and **maximum** mode, auto always uses 512 px SeedVR2 VAE tiles on macOS. This keeps peak unified-memory use bounded while preserving the full requested output size.
-- Vivid keeps PyTorch's Metal memory guard enabled and reserves CPU headroom so macOS remains responsive during long SeedVR2 runs. Advanced users can override the defaults with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `PYTORCH_MPS_LOW_WATERMARK_RATIO`, or `VIVID_CPU_THREADS`.
+- In **fast** and **normal**, auto uses Real-ESRGAN MLX tiling for larger outputs. Fast forces tiling on 8 GB systems.
+- In **normal-hq**, auto uses Spandrel/MPS tiling for larger outputs.
+- In **advanced** and **maximum**, `auto` and `on` enable MFLUX low-RAM mode so the transformer is released before VAE decode.
+- Vivid keeps PyTorch's Metal memory guard enabled for Normal HQ and reserves CPU headroom. Advanced users can override the PyTorch defaults with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `PYTORCH_MPS_LOW_WATERMARK_RATIO`, or `VIVID_CPU_THREADS`.
 - `off` forces the faster path when memory allows.
 - `on` forces the safer lower memory path.
 
@@ -128,7 +124,6 @@ By default Vivid installs to:
 
 ```text
 ~/.local/bin/vvd
-~/.local/share/vivid/repo
 ~/.local/share/vivid/venv
 ```
 
@@ -138,8 +133,9 @@ Downloaded model weights are kept in fixed locations:
 
 ```text
 ~/.local/share/vivid/models/SEEDVR2
-~/.local/share/vivid/models/realesrgan
-~/.local/share/vivid/models/nomos
+~/.local/share/vivid/models/mlx/Real-ESRGAN-general-x4v3
+~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus
+~/.local/share/vivid/models/nomos-webphoto-esrgan
 ```
 
 ## Output locations
@@ -163,7 +159,7 @@ When no output is supplied, Vivid writes an `_upscaled` file beside the input.
 ## Notes
 
 - The default mode is `normal`.
-- The default SeedVR2 model is `3b` for practicality on a Mac.
+- SeedVR2 is always the 3B model; 7B is intentionally unsupported.
 - `--scale 2` targets twice the source width and height. `--multiplier 2` is an alias.
-- `--scale` currently accepts a single image. Folder processing still uses `--resolution`.
+- The CLI currently accepts a single image.
 - `--denoise-strength` applies only to `fast` mode.

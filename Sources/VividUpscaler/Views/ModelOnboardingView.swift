@@ -105,6 +105,7 @@ struct ModelOnboardingView: View {
                     Text(model.modelName).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if installed { Text("Installed").font(.caption.bold()).foregroundStyle(.green) }
                 }
+                Text(model.backend).font(.caption2.bold()).foregroundStyle(.secondary)
                 Text(model.detail).font(.callout).foregroundStyle(.secondary)
                 Text("Minimum \(model.minimumRAMGB) GB · Recommended \(model.recommendedRAMGB) GB · Large images \(model.largeImageRAMGB) GB · Tiling \(model.defaultTiling)")
                     .font(.caption2)

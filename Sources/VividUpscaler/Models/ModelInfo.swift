@@ -5,6 +5,7 @@ struct ModelInfo: Identifiable, Hashable {
     let mode: UpscaleMode
     let title: String
     let modelName: String
+    let backend: String
     let minimumRAMGB: Int
     let recommendedRAMGB: Int
     let largeImageRAMGB: Int
@@ -23,11 +24,10 @@ struct ModelInfo: Identifiable, Hashable {
     }
 
     static let choices: [ModelInfo] = [
-        .init(id: "fast", mode: .fast, title: "Fast", modelName: "realesr-general-x4v3", minimumRAMGB: 8, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Fastest general-purpose upscaling. Uses forced tiling on 8 GB systems."),
-        .init(id: "normal", mode: .normal, title: "Normal", modelName: "4xNomosWebPhoto_atd", minimumRAMGB: 16, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Best general-purpose balance for compressed, resized, noisy, or slightly blurry photographs."),
-        .init(id: "normal-hq", mode: .normalHQ, title: "Normal HQ", modelName: "4xNomos2_hq_atd", minimumRAMGB: 16, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Best for clean camera originals and already high-quality source photographs."),
-        .init(id: "creative", mode: .creative, title: "Creative", modelName: "AuraSR v2", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "More aggressive generated detail. May alter faces, textures, or identity-sensitive details."),
-        .init(id: "advanced", mode: .advanced, title: "Advanced", modelName: "SeedVR2 3B FP8", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Faster SeedVR2 restoration with reduced memory use and quality close to FP16."),
-        .init(id: "maximum", mode: .maximum, title: "Maximum", modelName: "SeedVR2 3B FP16", minimumRAMGB: 24, recommendedRAMGB: 32, largeImageRAMGB: 48, defaultTiling: "auto", intendedUse: "Highest-quality SeedVR2 processing. Slowest mode and most memory intensive.")
+        .init(id: "fast", mode: .fast, title: "Fast", modelName: "mlx-community/Real-ESRGAN-general-x4v3", backend: "MLX", minimumRAMGB: 8, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Quickest option: a compact native FP16 MLX upscaler for Apple Silicon."),
+        .init(id: "normal", mode: .normal, title: "Normal", modelName: "mlx-community/Real-ESRGAN-x4plus", backend: "MLX", minimumRAMGB: 16, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "The main quality and speed balance with a more powerful conventional single-pass upscaler."),
+        .init(id: "normal-hq", mode: .normalHQ, title: "Normal HQ", modelName: "4xNomosWebPhoto_esrgan", backend: "PyTorch MPS via Spandrel", minimumRAMGB: 16, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Fast photographic restoration trained for compression, lens blur, noise, and Web/JPEG sources."),
+        .init(id: "advanced", mode: .advanced, title: "Advanced", modelName: "SeedVR2 3B 8-bit", backend: "Native MLX", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Difficult restoration jobs where a longer wait is acceptable, using the 3B model at 8-bit precision."),
+        .init(id: "maximum", mode: .maximum, title: "Maximum", modelName: "SeedVR2 3B source precision", backend: "Native MLX", minimumRAMGB: 24, recommendedRAMGB: 32, largeImageRAMGB: 48, defaultTiling: "auto", intendedUse: "Highest-quality, slowest SeedVR2 option using the 3B model at source precision.")
     ]
 }
