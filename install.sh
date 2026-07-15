@@ -6,7 +6,7 @@ BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="8"
+RUNTIME_VERSION="9"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -65,7 +65,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -323,6 +327,64 @@ def jxl_exif_box(exif: Image.Exif | None) -> bytes | None:
     return b"\x00\x00\x00\x00" + payload
 
 
+def cjxl_executable() -> Path | None:
+    candidates = [
+        os.environ.get("CJXL"),
+        shutil.which("cjxl"),
+        "/opt/homebrew/bin/cjxl",
+        "/usr/local/bin/cjxl",
+    ]
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return Path(candidate)
+    return None
+
+
+def save_color_managed_jxl(
+    image: Image.Image,
+    destination: Path,
+    exif: Image.Exif | None,
+    icc_profile: bytes,
+    xmp: bytes | None,
+) -> None:
+    executable = cjxl_executable()
+    if executable is None:
+        raise RuntimeError(
+            "JPEG XL output cannot retain this image's ICC color profile because cjxl is not installed. "
+            "Install it with: brew install jpeg-xl"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="vivid-jxl-") as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        pixels_path = temporary_root / "pixels.png"
+        image.save(pixels_path, format="PNG", icc_profile=icc_profile)
+        arguments = [
+            str(executable),
+            str(pixels_path),
+            str(destination),
+            "-q",
+            # Lossy libjxl encoding transforms wide-gamut pixels to its working
+            # color space. Lossless encoding retains the source ICC profile as
+            # the decoded output profile instead of normalizing it to sRGB.
+            "100",
+            "--container=1",
+        ]
+
+        if exif_box := jxl_exif_box(exif):
+            exif_path = temporary_root / "exif.tiff"
+            exif_path.write_bytes(exif_box[4:])
+            arguments += ["-x", f"exif={exif_path}"]
+        if xmp:
+            xmp_path = temporary_root / "xmp.xml"
+            xmp_path.write_bytes(xmp)
+            arguments += ["-x", f"xmp={xmp_path}"]
+
+        completed = subprocess.run(arguments, capture_output=True, text=True)
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(message or "cjxl failed to encode the output image")
+
+
 def save_image(
     image: Image.Image,
     destination: Path,
@@ -341,6 +403,9 @@ def save_image(
         exif[274] = 1
         exif_bytes = exif.tobytes()
     if ext == ".jxl":
+        if icc_profile:
+            save_color_managed_jxl(image, destination, exif, icc_profile, xmp)
+            return
         # pyjpegxl uses libjxl container boxes that remain readable by Apple's
         # ImageIO decoder while retaining the source EXIF and XMP payloads.
         pyjpegxl.write_from_numpy(
@@ -1125,7 +1190,11 @@ else
   if [[ "$STATUS" -eq 0 && "$CONVERT_QUALITY_OUTPUT" == "1" ]]; then
     "$PYTHON" - "$PROCESSING_OUTPUT" "$OUTPUT" "$QUALITY" "$INPUT" <<'PY'
 from pathlib import Path
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import pillow_jxl
 import numpy as np
 import pyjpegxl
@@ -1155,20 +1224,73 @@ def jxl_exif_box(exif: Image.Exif | None) -> bytes | None:
     return b"\x00\x00\x00\x00" + payload
 
 
+def cjxl_executable() -> Path | None:
+    candidates = [
+        os.environ.get("CJXL"),
+        shutil.which("cjxl"),
+        "/opt/homebrew/bin/cjxl",
+        "/usr/local/bin/cjxl",
+    ]
+    for candidate in candidates:
+        if candidate and os.access(candidate, os.X_OK):
+            return Path(candidate)
+    return None
+
+
+def save_color_managed_jxl(
+    image: Image.Image,
+    destination: Path,
+    exif: Image.Exif | None,
+    icc_profile: bytes,
+    xmp: bytes | None,
+) -> None:
+    executable = cjxl_executable()
+    if executable is None:
+        raise RuntimeError(
+            "JPEG XL output cannot retain this image's ICC color profile because cjxl is not installed. "
+            "Install it with: brew install jpeg-xl"
+        )
+    with tempfile.TemporaryDirectory(prefix="vivid-jxl-") as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        pixels_path = temporary_root / "pixels.png"
+        image.save(pixels_path, format="PNG", icc_profile=icc_profile)
+        arguments = [
+            str(executable), str(pixels_path), str(destination),
+            # Exact ICC-profile retention requires lossless JXL encoding.
+            "-q", "100", "--container=1",
+        ]
+        if exif_box := jxl_exif_box(exif):
+            exif_path = temporary_root / "exif.tiff"
+            exif_path.write_bytes(exif_box[4:])
+            arguments += ["-x", f"exif={exif_path}"]
+        if xmp:
+            xmp_path = temporary_root / "xmp.xml"
+            xmp_path.write_bytes(xmp)
+            arguments += ["-x", f"xmp={xmp_path}"]
+        completed = subprocess.run(arguments, capture_output=True, text=True)
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(message or "cjxl failed to encode the output image")
+
+
 with Image.open(source) as image:
     image = image.convert("RGB")
     if destination.suffix.lower() == ".jxl":
         with Image.open(metadata_source) as original:
             exif = original.getexif()
             xmp = original.info.get("xmp")
-        pyjpegxl.write_from_numpy(
-            destination,
-            np.asarray(image),
-            lossless=quality >= 100,
-            quality=jxl_distance_from_quality(quality),
-            exif=jxl_exif_box(exif),
-            xmp=xmp,
-        )
+            icc_profile = original.info.get("icc_profile")
+        if icc_profile:
+            save_color_managed_jxl(image, destination, exif, icc_profile, xmp)
+        else:
+            pyjpegxl.write_from_numpy(
+                destination,
+                np.asarray(image),
+                lossless=quality >= 100,
+                quality=jxl_distance_from_quality(quality),
+                exif=jxl_exif_box(exif),
+                xmp=xmp,
+            )
     else:
         save_kwargs = {"quality": quality}
         if destination.suffix.lower() in {".jpg", ".jpeg"}:

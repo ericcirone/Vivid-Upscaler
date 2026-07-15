@@ -80,6 +80,10 @@ vvd models delete normal
 Supported GUI output choices are the input format, PNG, JPG, JPEG XL, and WebP.
 JPEG XL encoding uses the reference `libjxl` implementation through `pyjpegxl`;
 `pillow-jxl-plugin` provides JPEG XL input decoding.
+When a source image contains an ICC color profile, Vivid uses `cjxl` in lossless
+mode so the decoded JXL retains that exact profile instead of switching to
+sRGB. Install the reference encoder with `brew install jpeg-xl` if it is not
+already available.
 
 ## Modes
 
