@@ -66,6 +66,10 @@ actor VividCLI {
         }
     }
 
+    func deleteModel(_ id: String) async throws {
+        _ = try await runForOutput(arguments: ["models", "delete", id])
+    }
+
     func upscale(
         input: URL,
         output: URL,
@@ -128,8 +132,11 @@ actor VividCLI {
 
     private func runtimeIsInstalled() -> Bool {
         let root = runtimeRoot()
+        let versionURL = root.appendingPathComponent("runtime-version")
+        let version = try? String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("repo/inference_cli.py").path)
+            && version == "2"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

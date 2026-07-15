@@ -5,6 +5,19 @@ import Observation
 @MainActor
 @Observable
 final class UpscaleStore {
+    enum ModelError: LocalizedError {
+        case unknownModel(String)
+        case insufficientRAM(model: String, requiredGB: Int, availableGB: Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .unknownModel(let id): "Unknown model: \(id)."
+            case .insufficientRAM(let model, let requiredGB, let availableGB):
+                "\(model) requires at least \(requiredGB) GB of RAM. This Mac has \(availableGB) GB."
+            }
+        }
+    }
+
     var inputURL: URL?
     var mode: UpscaleMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
     var sizingKind: SizingKind { didSet { defaults.set(sizingKind.rawValue, forKey: "sizingKind") } }
@@ -25,9 +38,13 @@ final class UpscaleStore {
     private let cli = VividCLI()
     private let defaults = UserDefaults.standard
 
-    init() {
+    let systemRAMGB: Int
+
+    init(systemMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) {
         let defaults = UserDefaults.standard
-        mode = UpscaleMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .normal
+        systemRAMGB = Int(systemMemoryBytes / 1_073_741_824)
+        let savedMode = UpscaleMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .normal
+        mode = savedMode.minimumRAMGB <= systemRAMGB ? savedMode : (systemRAMGB >= 16 ? .normal : .fast)
         sizingKind = SizingKind(rawValue: defaults.string(forKey: "sizingKind") ?? "") ?? .scale
         scale = defaults.object(forKey: "scale") == nil ? 2 : defaults.double(forKey: "scale")
         resolution = defaults.object(forKey: "resolution") == nil ? 2048 : defaults.integer(forKey: "resolution")
@@ -37,6 +54,14 @@ final class UpscaleStore {
 
     var options: UpscaleOptions {
         UpscaleOptions(mode: mode, sizingKind: sizingKind, scale: scale, resolution: resolution, maxResolution: maxResolution, format: format)
+    }
+
+    func canInstall(_ model: ModelInfo) -> Bool {
+        model.isCompatible(withRAMGB: systemRAMGB)
+    }
+
+    func isInstalled(_ model: ModelInfo) -> Bool {
+        installedModelIDs.contains(model.id)
     }
 
     var outputURL: URL? {
@@ -70,7 +95,11 @@ final class UpscaleStore {
     }
 
     func requestUpscale() {
-        let requiredModelID = mode == .advanced ? "advanced-3b" : mode.rawValue
+        let requiredModelID = mode.rawValue
+        guard mode.minimumRAMGB <= systemRAMGB else {
+            errorMessage = "\(mode.title) requires at least \(mode.minimumRAMGB) GB of RAM. This Mac has \(systemRAMGB) GB."
+            return
+        }
         guard installedModelIDs.contains(requiredModelID) else {
             showOnboarding = true
             return
@@ -118,6 +147,12 @@ final class UpscaleStore {
     }
 
     func installModels(_ ids: [String]) async throws {
+        for id in ids {
+            guard let model = ModelInfo.info(for: id) else { throw ModelError.unknownModel(id) }
+            guard canInstall(model) else {
+                throw ModelError.insufficientRAM(model: model.title, requiredGB: model.minimumRAMGB, availableGB: systemRAMGB)
+            }
+        }
         try await cli.installModels(ids) { [weak self] event in
             Task { @MainActor in
                 if let fraction = event.fraction, fraction >= (self?.progress ?? 0) { self?.progress = fraction }
@@ -125,6 +160,13 @@ final class UpscaleStore {
             }
         }
         installedModelIDs = try await cli.installedModels()
+    }
+
+    func deleteModel(_ id: String) async throws {
+        guard ModelInfo.info(for: id) != nil else { throw ModelError.unknownModel(id) }
+        try await cli.deleteModel(id)
+        installedModelIDs = try await cli.installedModels()
+        showOnboarding = installedModelIDs.isEmpty
     }
 
     func installCommandLineTool() async {

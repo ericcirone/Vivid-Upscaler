@@ -6,6 +6,7 @@ BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 REPO_DIR="$INSTALL_ROOT/repo"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
+RUNTIME_VERSION="2"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -56,7 +57,7 @@ echo "Installing dependencies..."
 uv pip install --python "$VENV_DIR/bin/python" --upgrade pip setuptools wheel
 uv pip install --python "$VENV_DIR/bin/python" torch torchvision torchaudio
 uv pip install --python "$VENV_DIR/bin/python" -r "$REPO_DIR/requirements.txt"
-uv pip install --python "$VENV_DIR/bin/python" pillow pillow-jxl-plugin numpy "spandrel==0.4.2" safetensors
+uv pip install --python "$VENV_DIR/bin/python" pillow pillow-jxl-plugin numpy "spandrel==0.4.2" safetensors aura-sr
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 #!/usr/bin/env python3
@@ -95,15 +96,32 @@ MODELS = {
         "download_dir": "realesrgan",
     },
     "normal": {
-        "display_name": "4xNomosWebPhoto_RealPLKSR",
+        "display_name": "4xNomosWebPhoto_atd",
         "kind": "single",
         "files": {
             "main": {
-                "filename": "4xNomosWebPhoto_RealPLKSR.safetensors",
-                "url": "https://huggingface.co/Phips/4xNomosWebPhoto_RealPLKSR/resolve/main/4xNomosWebPhoto_RealPLKSR.safetensors",
+                "filename": "4xNomosWebPhoto_atd.safetensors",
+                "url": "https://huggingface.co/Phips/4xNomosWebPhoto_atd/resolve/main/4xNomosWebPhoto_atd.safetensors",
             }
         },
         "download_dir": "nomos",
+    },
+    "normal-hq": {
+        "display_name": "4xNomos2_hq_atd",
+        "kind": "single",
+        "files": {
+            "main": {
+                "filename": "4xNomos2_hq_atd.safetensors",
+                "url": "https://huggingface.co/Phips/4xNomos2_hq_atd/resolve/main/4xNomos2_hq_atd.safetensors",
+            }
+        },
+        "download_dir": "nomos-hq",
+    },
+    "creative": {
+        "display_name": "AuraSR v2",
+        "kind": "aurasr",
+        "files": {"main": {"filename": "model.safetensors", "url": ""}},
+        "download_dir": "aurasr-v2",
     },
 }
 
@@ -302,7 +320,7 @@ def main() -> int:
     parser.add_argument("input")
     parser.add_argument("output")
     parser.add_argument("--model-root", required=True)
-    parser.add_argument("--mode", choices=["fast", "normal"], required=True)
+    parser.add_argument("--mode", choices=["fast", "normal", "normal-hq", "creative"], required=True)
     parser.add_argument("--short-edge", type=int, required=True)
     parser.add_argument("--max-long-edge", type=int, required=True)
     parser.add_argument("--tile", choices=["auto", "on", "off"], default="auto")
@@ -319,8 +337,32 @@ def main() -> int:
 
     print("[2/3] Upscaling", flush=True)
     print(f"      Mode:   {args.mode}", flush=True)
-    print(f"      Model:  {spec['display_name']} via Spandrel", flush=True)
+    backend = "AuraSR" if spec["kind"] == "aurasr" else "Spandrel"
+    print(f"      Model:  {spec['display_name']} via {backend}", flush=True)
     print("      Ensuring model weights...", flush=True)
+
+    if spec["kind"] == "aurasr":
+        from aura_sr import AuraSR
+        model_path = model_dir / "model.safetensors"
+        if not model_path.exists() or not (model_dir / "config.json").exists():
+            raise RuntimeError("AuraSR v2 is not installed. Run: vvd models install creative")
+        device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"      Device: {device}", flush=True)
+        print("      Loading model...", flush=True)
+        model = AuraSR.from_pretrained(str(model_path), device=device)
+        with Image.open(input_path) as opened:
+            source_format = opened.format
+            exif = opened.getexif()
+            icc_profile = opened.info.get("icc_profile")
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+        target_width, target_height = compute_target_size(*image.size, args.short_edge, args.max_long_edge)
+        print("      Processing overlapped tiles...", flush=True)
+        result = model.upscale_4x_overlapped(image, max_batch_size=1)
+        if result.size != (target_width, target_height):
+            result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        print("      Saving output...", flush=True)
+        save_image(result, output_path, source_format, exif, icc_profile)
+        return 0
 
     selected_weight: Path
     if spec["kind"] == "realesr":
@@ -404,9 +446,18 @@ model_is_installed() {
       [[ -f "$MODEL_ROOT/realesrgan/realesr-general-x4v3.pth" && -f "$MODEL_ROOT/realesrgan/realesr-general-wdn-x4v3.pth" ]]
       ;;
     normal)
-      [[ -f "$MODEL_ROOT/nomos/4xNomosWebPhoto_RealPLKSR.safetensors" ]]
+      [[ -f "$MODEL_ROOT/nomos/4xNomosWebPhoto_atd.safetensors" ]]
       ;;
-    advanced-3b)
+    normal-hq)
+      [[ -f "$MODEL_ROOT/nomos-hq/4xNomos2_hq_atd.safetensors" ]]
+      ;;
+    creative)
+      [[ -f "$MODEL_ROOT/aurasr-v2/model.safetensors" && -f "$MODEL_ROOT/aurasr-v2/config.json" ]]
+      ;;
+    advanced)
+      [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
+      ;;
+    maximum)
       [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
       ;;
     *) return 1 ;;
@@ -449,17 +500,39 @@ except BaseException:
 PY
 }
 
+system_ram_gb() {
+  local bytes
+  bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
+  if [[ "$bytes" =~ ^[0-9]+$ ]]; then
+    echo $((bytes / 1073741824))
+  else
+    echo 0
+  fi
+}
+
+minimum_ram_for_model() {
+  case "$1" in
+    fast) echo 8 ;;
+    normal|normal-hq|creative|advanced) echo 16 ;;
+    maximum) echo 24 ;;
+    *) echo 0 ;;
+  esac
+}
+
 if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; ADVANCED=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; CREATIVE=false; ADVANCED=false; MAXIMUM=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
-        model_is_installed advanced-3b && ADVANCED=true
-        printf '{"fast":%s,"normal":%s,"advanced-3b":%s}\n' "$FAST" "$NORMAL" "$ADVANCED"
+        model_is_installed normal-hq && NORMAL_HQ=true
+        model_is_installed creative && CREATIVE=true
+        model_is_installed advanced && ADVANCED=true
+        model_is_installed maximum && MAXIMUM=true
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"creative":%s,"advanced":%s,"maximum":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$CREATIVE" "$ADVANCED" "$MAXIMUM"
       else
-        for MODEL_ID in fast normal advanced-3b; do
+        for MODEL_ID in fast normal normal-hq creative advanced maximum; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -475,6 +548,12 @@ if [[ "${1:-}" == "models" ]]; then
         exit 1
       fi
       MODEL_ID="${3:-}"
+      AVAILABLE_RAM="$(system_ram_gb)"
+      REQUIRED_RAM="$(minimum_ram_for_model "$MODEL_ID")"
+      if (( AVAILABLE_RAM > 0 && REQUIRED_RAM > AVAILABLE_RAM )); then
+        echo "$MODEL_ID requires at least $REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
+        exit 1
+      fi
       case "$MODEL_ID" in
         fast)
           download_model_file \
@@ -486,10 +565,31 @@ if [[ "${1:-}" == "models" ]]; then
           ;;
         normal)
           download_model_file \
-            "https://huggingface.co/Phips/4xNomosWebPhoto_RealPLKSR/resolve/main/4xNomosWebPhoto_RealPLKSR.safetensors" \
-            "$MODEL_ROOT/nomos/4xNomosWebPhoto_RealPLKSR.safetensors"
+            "https://huggingface.co/Phips/4xNomosWebPhoto_atd/resolve/main/4xNomosWebPhoto_atd.safetensors" \
+            "$MODEL_ROOT/nomos/4xNomosWebPhoto_atd.safetensors"
           ;;
-        advanced-3b)
+        normal-hq)
+          download_model_file \
+            "https://huggingface.co/Phips/4xNomos2_hq_atd/resolve/main/4xNomos2_hq_atd.safetensors" \
+            "$MODEL_ROOT/nomos-hq/4xNomos2_hq_atd.safetensors"
+          ;;
+        creative)
+          download_model_file \
+            "https://huggingface.co/fal/AuraSR-v2/resolve/main/model.safetensors" \
+            "$MODEL_ROOT/aurasr-v2/model.safetensors"
+          download_model_file \
+            "https://huggingface.co/fal/AuraSR-v2/resolve/main/config.json" \
+            "$MODEL_ROOT/aurasr-v2/config.json"
+          ;;
+        advanced)
+          download_model_file \
+            "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp8_e4m3fn.safetensors" \
+            "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors"
+          download_model_file \
+            "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/ema_vae_fp16.safetensors" \
+            "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
+          ;;
+        maximum)
           download_model_file \
             "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp16.safetensors" \
             "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors"
@@ -498,15 +598,32 @@ if [[ "${1:-}" == "models" ]]; then
             "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
           ;;
         *)
-          echo "Usage: vvd models install fast|normal|advanced-3b" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|creative|advanced|maximum" >&2
           exit 2
           ;;
       esac
       echo "Installed model: $MODEL_ID"
       exit 0
       ;;
+    delete)
+      MODEL_ID="${3:-}"
+      case "$MODEL_ID" in
+        fast) rm -rf "$MODEL_ROOT/realesrgan" ;;
+        normal) rm -rf "$MODEL_ROOT/nomos" ;;
+        normal-hq) rm -rf "$MODEL_ROOT/nomos-hq" ;;
+        creative) rm -rf "$MODEL_ROOT/aurasr-v2" ;;
+        advanced) rm -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors" ;;
+        maximum) rm -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|creative|advanced|maximum" >&2; exit 2 ;;
+      esac
+      if ! model_is_installed advanced && ! model_is_installed maximum; then
+        rm -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
+      fi
+      echo "Deleted model: $MODEL_ID"
+      exit 0
+      ;;
     *)
-      echo "Usage: vvd models status [--json] | vvd models install MODEL" >&2
+      echo "Usage: vvd models status [--json] | vvd models install MODEL | vvd models delete MODEL" >&2
       exit 2
       ;;
   esac
@@ -529,12 +646,14 @@ Examples:
 
 Modes:
   fast      Fastest photographic upscaling with realesr-general-x4v3.
-  normal    Better photographic quality with 4xNomosWebPhoto_RealPLKSR.
-            This is the default mode.
-  advanced  Slowest, most restorative processing with SeedVR2.
+  normal    General photographic restoration with 4xNomosWebPhoto_atd. Default.
+  normal-hq Clean source photography with 4xNomos2_hq_atd.
+  creative  Aggressive generated detail with AuraSR v2.
+  advanced  Reduced-memory SeedVR2 3B FP8 restoration.
+  maximum   Highest-quality SeedVR2 3B FP16 restoration.
 
 Options:
-  --mode fast|normal|advanced  Processing mode. Default: normal
+  --mode MODE                  fast, normal, normal-hq, creative, advanced, or maximum
   --fast                       Alias for --mode fast
   --normal                     Alias for --mode normal
   --advanced                   Alias for --mode advanced
@@ -611,6 +730,18 @@ while [[ $# -gt 0 ]]; do
       MODE="advanced"
       shift
       ;;
+    --normal-hq)
+      MODE="normal-hq"
+      shift
+      ;;
+    --creative)
+      MODE="creative"
+      shift
+      ;;
+    --maximum)
+      MODE="maximum"
+      shift
+      ;;
     --model)
       MODEL="${2:?Missing value for --model}"
       shift 2
@@ -658,20 +789,27 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  fast|normal|advanced) ;;
+  fast|normal|normal-hq|creative|advanced|maximum) ;;
   *)
-    echo "--mode must be fast, normal, or advanced" >&2
+    echo "--mode must be fast, normal, normal-hq, creative, advanced, or maximum" >&2
     exit 2
     ;;
 esac
 
-case "$MODEL" in
-  3b) DIT_MODEL="seedvr2_ema_3b_fp16.safetensors" ;;
-  7b) DIT_MODEL="seedvr2_ema_7b_fp16.safetensors" ;;
-  *)
-    echo "--model must be 3b or 7b" >&2
-    exit 2
-    ;;
+AVAILABLE_RAM="$(system_ram_gb)"
+REQUIRED_RAM="$(minimum_ram_for_model "$MODE")"
+if (( AVAILABLE_RAM > 0 && REQUIRED_RAM > AVAILABLE_RAM )); then
+  echo "$MODE requires at least $REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
+  exit 1
+fi
+if [[ "$MODE" == "fast" && "$TILE_MODE" == "auto" && "$AVAILABLE_RAM" -gt 0 && "$AVAILABLE_RAM" -le 8 ]]; then
+  TILE_MODE="on"
+fi
+
+case "$MODE" in
+  advanced) DIT_MODEL="seedvr2_ema_3b_fp8_e4m3fn.safetensors" ;;
+  maximum) DIT_MODEL="seedvr2_ema_3b_fp16.safetensors" ;;
+  *) DIT_MODEL="seedvr2_ema_3b_fp16.safetensors" ;;
 esac
 
 case "$TILE_MODE" in
@@ -733,7 +871,7 @@ PY
 fi
 
 ADVANCED_TILE_NOTE="off"
-if [[ "$MODE" == "advanced" ]]; then
+if [[ "$MODE" == "advanced" || "$MODE" == "maximum" ]]; then
   ADVANCED_TILE_NOTE="$($PYTHON - "$MODEL" "$TILE_MODE" "$RESOLUTION" "$MAX_RESOLUTION" <<'PY'
 import sys
 model = sys.argv[1]
@@ -764,7 +902,7 @@ ARGS=(
 
 PROCESSING_OUTPUT="$OUTPUT"
 CONVERT_JXL="0"
-if [[ "$MODE" == "advanced" && -n "$OUTPUT" && "${OUTPUT##*.}" == "jxl" ]]; then
+if [[ ( "$MODE" == "advanced" || "$MODE" == "maximum" ) && -n "$OUTPUT" && "${OUTPUT##*.}" == "jxl" ]]; then
   PROCESSING_OUTPUT="${OUTPUT%.*}.vivid-temp.png"
   CONVERT_JXL="1"
 fi
@@ -818,14 +956,29 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
   echo "      Mode:   $MODE"
   case "$MODE" in
     advanced)
-      echo "      Model:  SeedVR2 $MODEL"
+      echo "      Model:  SeedVR2 3B FP8"
+      echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
+      echo "      Tiling: $ADVANCED_TILE_NOTE"
+      ;;
+    maximum)
+      echo "      Model:  SeedVR2 3B FP16"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
       ;;
     normal)
-      echo "      Model:  4xNomosWebPhoto_RealPLKSR"
+      echo "      Model:  4xNomosWebPhoto_atd"
       echo "      Model files: $MODEL_ROOT/nomos"
       echo "      Tiling: $TILE_MODE"
+      ;;
+    normal-hq)
+      echo "      Model:  4xNomos2_hq_atd"
+      echo "      Model files: $MODEL_ROOT/nomos-hq"
+      echo "      Tiling: $TILE_MODE"
+      ;;
+    creative)
+      echo "      Model:  AuraSR v2"
+      echo "      Model files: $MODEL_ROOT/aurasr-v2"
+      echo "      Tiling: auto"
       ;;
     fast)
       echo "      Model:  realesr-general-x4v3"
@@ -839,7 +992,7 @@ fi
 
 START_SECONDS=$SECONDS
 
-if [[ "$MODE" == "fast" || "$MODE" == "normal" ]]; then
+if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" || "$MODE" == "creative" ]]; then
   if [[ -z "$OUTPUT" ]]; then
     OUTPUT="$($PYTHON - "$INPUT" <<'PY'
 from pathlib import Path
@@ -933,6 +1086,7 @@ exit "$STATUS"
 WRAPPER
 
 chmod +x "$BIN_DIR/vvd"
+printf '%s\n' "$RUNTIME_VERSION" > "$INSTALL_ROOT/runtime-version"
 
 echo
 echo "Installed: $BIN_DIR/vvd"

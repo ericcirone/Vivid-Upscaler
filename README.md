@@ -3,11 +3,16 @@
 Vivid is a native Mac photo upscaler with an optional Terminal command.
 The app bundles the CLI, so both surfaces execute the same models and processing pipeline.
 
-The three modes are:
+The six modes are:
 
-- **fast** uses `realesr-general-x4v3`
-- **normal** uses `4xNomosWebPhoto_RealPLKSR`
-- **advanced** uses SeedVR2
+| Mode | Model | Minimum RAM | Recommended RAM | Large Image RAM | Default Tiling | Intended use |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| `fast` | `realesr-general-x4v3` | 8 GB | 16 GB | 24 GB | `auto` | Fastest general-purpose upscaling. Tiling is forced on 8 GB systems. |
+| `normal` | `4xNomosWebPhoto_atd` | 16 GB | 16 GB | 24 GB | `auto` | Best balance for compressed, resized, noisy, or slightly blurry photographs. |
+| `normal-hq` | `4xNomos2_hq_atd` | 16 GB | 16 GB | 24 GB | `auto` | Best for clean camera originals and high-quality source photographs. |
+| `creative` | `AuraSR v2` | 16 GB | 24 GB | 32 GB | `auto` | Aggressive generated detail that may alter identity-sensitive details. |
+| `advanced` | `SeedVR2 3B FP8` | 16 GB | 24 GB | 32 GB | `auto` | Faster SeedVR2 restoration with reduced memory use. |
+| `maximum` | `SeedVR2 3B FP16` | 24 GB | 32 GB | 48 GB | `auto` | Highest-quality and most memory-intensive SeedVR2 processing. |
 
 The command name is:
 
@@ -69,6 +74,7 @@ vvd ./input-folder ./output-folder --mode advanced --resolution 2048
 vvd models status
 vvd models status --json
 vvd models install normal
+vvd models delete normal
 ```
 
 Supported GUI output choices are the input format, PNG, JPG, JPEG XL, and WebP.
@@ -80,14 +86,17 @@ JPEG XL support is installed through `pillow-jxl-plugin`.
 
 Uses `realesr-general-x4v3` for the quickest photo upscaling.
 
-### Normal
+### Normal and Normal HQ
 
-Uses `4xNomosWebPhoto_RealPLKSR` for a better quality and speed balance on general photography.
-This is the default mode.
+Normal uses `4xNomosWebPhoto_atd` for imperfect or compressed photographs and is the default. Normal HQ uses `4xNomos2_hq_atd` for clean source photographs.
 
-### Advanced
+### Creative
 
-Uses SeedVR2 for the slowest but most restorative processing.
+Uses AuraSR v2 for more aggressive generated detail.
+
+### Advanced and Maximum
+
+Advanced uses SeedVR2 3B FP8. Maximum uses SeedVR2 3B FP16 for the highest quality at a substantially higher memory cost.
 
 ## Tiling
 
@@ -101,8 +110,9 @@ The wrapper supports:
 
 Default is `auto`.
 
-- In **fast** and **normal** mode, auto turns tiling on only for larger outputs.
-- In **advanced** mode, auto always uses 512 px SeedVR2 VAE tiles on macOS. This keeps peak unified-memory use bounded while preserving the full requested output size.
+- In **fast**, **normal**, and **normal-hq** mode, auto turns tiling on for larger outputs. Fast forces tiling on 8 GB systems.
+- **Creative** uses AuraSR's overlapped tiles.
+- In **advanced** and **maximum** mode, auto always uses 512 px SeedVR2 VAE tiles on macOS. This keeps peak unified-memory use bounded while preserving the full requested output size.
 - Vivid keeps PyTorch's Metal memory guard enabled and reserves CPU headroom so macOS remains responsive during long SeedVR2 runs. Advanced users can override the defaults with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `PYTORCH_MPS_LOW_WATERMARK_RATIO`, or `VIVID_CPU_THREADS`.
 - `off` forces the faster path when memory allows.
 - `on` forces the safer lower memory path.

@@ -7,9 +7,16 @@ struct OptionsView: View {
         Form {
             Section("Mode") {
                 Picker("Mode", selection: $store.mode) {
-                    ForEach(UpscaleMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    ForEach(UpscaleMode.allCases) { mode in
+                        Text(mode.title)
+                            .tag(mode)
+                            .disabled(mode.minimumRAMGB > store.systemRAMGB)
+                    }
                 }
                 Text(store.mode.detail).font(.caption).foregroundStyle(.secondary)
+                Text("Requires \(store.mode.minimumRAMGB) GB RAM · This Mac: \(store.systemRAMGB) GB")
+                    .font(.caption2)
+                    .foregroundStyle(store.mode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)
             }
 
             Section("Size") {
