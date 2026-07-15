@@ -76,12 +76,14 @@ vvd input.jpg                                      # Writes input_upscaled.jpg b
 vvd input.jpg output.jpg --scale 2
 vvd input.jpg output.png --mode fast --scale 4
 vvd input.jpg output.webp --mode normal-hq --resolution 2048
+vvd input.jpg output.png --mode normal --deblur deblur-motion --scale 2
 vvd input.jpg output.jxl --mode advanced --scale 2 --quality 90
 vvd input.jpg output.png --mode maximum --tile on
 
 vvd models status
 vvd models status --json
 vvd models install normal
+vvd models install deblur-motion
 vvd models delete normal
 ```
 
@@ -90,6 +92,7 @@ Run `vvd --help` for the complete option list. The main options are:
 | Option | Description |
 | --- | --- |
 | `--mode MODE` | `fast`, `normal`, `normal-hq`, `advanced`, or `maximum`; default is `normal` |
+| `--deblur MODE` | Optional `deblur-motion` or `deblur-defocus` Restormer pass before upscaling; default is `none` |
 | `--scale N` | Multiply both source dimensions by `N` |
 | `--resolution N` | Target the short edge in pixels; default is 2048 |
 | `--max-resolution N` | Cap the long edge in pixels; default is 4096 |
@@ -110,12 +113,16 @@ A bare output filename is saved beside the input file. Include a slash, such as 
 | `normal-hq` | `4xNomosWebPhoto_esrgan` | PyTorch MPS via Spandrel | 16 GB | 16 GB | 24 GB | Photographic restoration for compression, blur, noise, and Web/JPEG sources |
 | `advanced` | SeedVR2 3B 8-bit | Native MLX | 16 GB | 24 GB | 32 GB | Difficult restoration jobs where a longer wait is acceptable |
 | `maximum` | SeedVR2 3B source precision | Native MLX | 24 GB | 32 GB | 48 GB | Highest-quality and slowest processing |
+| `deblur-motion` | Restormer Motion Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Camera shake, subject movement, and directional motion blur |
+| `deblur-defocus` | Restormer Single-Image Defocus Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Out-of-focus and lens-related blur |
 
 SeedVR2 is intentionally limited to the 3B model. Advanced quantizes it to 8-bit at load time; Maximum keeps the source precision.
 
+The two Restormer entries are optional preprocessors, not upscale modes. Choose Motion Blur or Out of Focus in the app; Vivid does not guess when the blur type is uncertain. Deblurring preserves the source dimensions and runs before the selected upscale mode.
+
 ### Tiling
 
-`--tile auto` is the default. It enables a safer path for larger Real-ESRGAN and Normal HQ jobs and enables MFLUX low-RAM mode for Advanced and Maximum. `--tile on` forces the lower-memory path, while `--tile off` forces the faster path when memory allows. Fast mode automatically forces tiling on 8 GB systems.
+`--tile auto` is the default. It enables a safer path for larger Real-ESRGAN, Normal HQ, and Restormer jobs and enables MFLUX low-RAM mode for Advanced and Maximum. `--tile on` forces the lower-memory path, while `--tile off` forces the faster path when memory allows. Fast mode automatically forces tiling on 8 GB systems.
 
 Vivid keeps PyTorch's Metal memory guard enabled and reserves CPU headroom. Advanced users can override the defaults with `PYTORCH_MPS_HIGH_WATERMARK_RATIO`, `PYTORCH_MPS_LOW_WATERMARK_RATIO`, or `VIVID_CPU_THREADS`.
 
@@ -127,6 +134,7 @@ App output is written beside the input with a predictable name:
 
 ```text
 portrait-vivid-upscale-normal-2x.jpg
+portrait-vivid-upscale-normal-deblur-motion-2x.jpg
 portrait-vivid-upscale-advanced-2048px.webp
 ```
 
@@ -139,6 +147,8 @@ portrait-vivid-upscale-advanced-2048px.webp
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-general-x4v3
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus
 ~/.local/share/vivid/models/nomos-webphoto-esrgan
+~/.local/share/vivid/models/restormer/motion
+~/.local/share/vivid/models/restormer/defocus
 ```
 
 Set `VIVID_HOME` to change the runtime and model root, or `VIVID_BIN_DIR` to change the standalone CLI installation directory.

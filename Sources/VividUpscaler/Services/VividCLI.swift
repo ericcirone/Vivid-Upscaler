@@ -86,6 +86,7 @@ actor VividCLI {
     ) async throws {
         try await ensureRuntime(onEvent: onEvent)
         var arguments = [input.path, output.path, "--mode", options.mode.rawValue]
+        arguments += ["--deblur", options.deblurMode.rawValue]
         switch options.sizingKind {
         case .scale:
             arguments += ["--scale", String(options.scale)]
@@ -154,7 +155,7 @@ actor VividCLI {
         let version = try? String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
-            && version == "11"
+            && version == "13"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

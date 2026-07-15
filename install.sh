@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="11"
+RUNTIME_VERSION="13"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -39,7 +39,7 @@ uv pip install --python "$VENV_DIR/bin/python" torch torchvision
 uv pip install --python "$VENV_DIR/bin/python" \
   "mflux==0.18.0" \
   "realesrgan-mlx @ git+https://github.com/xocialize/realesrgan-mlx.git@52c0fc1044277900b995308095a1f3cc484a3581" \
-  pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" safetensors huggingface-hub
+  pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" "spandrel-extra-arches==0.2.0" safetensors huggingface-hub
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 #!/usr/bin/env python3
@@ -90,6 +90,21 @@ MODELS = {
         "download_dir": "nomos-webphoto-esrgan",
     },
 }
+
+DEBLUR_MODELS = {
+    "deblur-motion": {
+        "display_name": "Restormer Motion Deblurring",
+        "filename": "motion_deblurring.pth",
+        "download_dir": "restormer/motion",
+    },
+    "deblur-defocus": {
+        "display_name": "Restormer Single-Image Defocus Deblurring",
+        "filename": "single_image_defocus_deblurring.pth",
+        "download_dir": "restormer/defocus",
+    },
+}
+
+EXTRA_ARCHES_INSTALLED = False
 
 
 class ProgressBar:
@@ -193,6 +208,13 @@ def choose_tile_size(
     if tile_mode == "on":
         return 512 if mode == "fast" else 384
 
+    # Restormer keeps large full-resolution feature maps alive throughout its
+    # encoder/decoder. Even a roughly 4 MP source can exceed MPS's working-set
+    # limit on an otherwise supported Mac, so automatic mode must tile deblur
+    # passes independently of the later upscaler's memory policy.
+    if mode == "deblur":
+        return 512 if system_ram_gb >= 24 else 384
+
     native_megapixels = width * height * native_scale * native_scale / 1_000_000
     long_edge = max(width, height) * native_scale
 
@@ -280,6 +302,56 @@ def infer_tiled(
                 print(f"      Tiles: {completed}/{total}", flush=True)
 
     return output
+
+
+def run_spandrel_model(weight_path: Path, image: Image.Image, tile_size: int) -> tuple[np.ndarray, int]:
+    global torch, ImageModelDescriptor, ModelLoader, EXTRA_ARCHES_INSTALLED
+    import torch
+    import spandrel_extra_arches
+    from spandrel import ImageModelDescriptor, ModelLoader
+
+    if not EXTRA_ARCHES_INSTALLED:
+        spandrel_extra_arches.install()
+        EXTRA_ARCHES_INSTALLED = True
+
+    if not weight_path.exists():
+        raise RuntimeError(f"Model is not installed: {weight_path.name}")
+    device = choose_device()
+    print(f"      Device: {device}", flush=True)
+    print("      Loading model...", flush=True)
+    model = ModelLoader().load_from_file(weight_path)
+    if not isinstance(model, ImageModelDescriptor):
+        raise RuntimeError("The downloaded model is not an image-to-image model")
+    model.to(device).eval()
+    scale = int(model.scale)
+    input_tensor = pil_to_tensor(image)
+    if tile_size:
+        output = infer_tiled(model, input_tensor, device, scale, tile_size)
+    else:
+        print("      Processing full image...", flush=True)
+        output = infer_full(model, input_tensor, device)
+    return output, scale
+
+
+def deblur_image(
+    image: Image.Image,
+    mode: str,
+    model_root: Path,
+    tile_mode: str,
+    system_ram_gb: int,
+) -> Image.Image:
+    spec = DEBLUR_MODELS[mode]
+    weight_path = model_root / spec["download_dir"] / spec["filename"]
+    width, height = image.size
+    tile_size = choose_tile_size(tile_mode, width, height, 1, "deblur", system_ram_gb)
+    tile_note = "off" if tile_size == 0 else f"on ({tile_size}px)"
+    print("      Deblurring before upscale", flush=True)
+    print(f"      Model:  {spec['display_name']} via PyTorch MPS", flush=True)
+    print(f"      Tiling: {tile_note}", flush=True)
+    output, scale = run_spandrel_model(weight_path, image, tile_size)
+    if scale != 1:
+        raise RuntimeError(f"Restormer reported an unexpected {scale}x output scale")
+    return Image.fromarray(output, mode="RGB")
 
 
 def jxl_distance_from_quality(quality: int) -> float:
@@ -442,6 +514,7 @@ def main() -> int:
     parser.add_argument("output")
     parser.add_argument("--model-root", required=True)
     parser.add_argument("--mode", choices=["fast", "normal", "normal-hq"], required=True)
+    parser.add_argument("--deblur", choices=["none", "deblur-motion", "deblur-defocus"], default="none")
     parser.add_argument("--short-edge", type=int, required=True)
     parser.add_argument("--max-long-edge", type=int, required=True)
     parser.add_argument("--tile", choices=["auto", "on", "off"], default="auto")
@@ -449,6 +522,7 @@ def main() -> int:
     parser.add_argument("--denoise-strength", type=float, default=0.5)
     parser.add_argument("--quality", type=int, choices=range(1, 101), default=90, metavar="1-100")
     parser.add_argument("--finalize-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--deblur-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--metadata-source", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -476,6 +550,27 @@ def main() -> int:
         input_path.unlink(missing_ok=True)
         return 0
 
+    metadata_path = Path(args.metadata_source) if args.metadata_source else input_path
+    with Image.open(metadata_path) as metadata_source:
+        exif = metadata_source.getexif()
+        icc_profile = metadata_source.info.get("icc_profile")
+        xmp = metadata_source.info.get("xmp") or metadata_source.info.get("XML:com.adobe.xmp")
+        source_info = dict(metadata_source.info)
+
+    with Image.open(input_path) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+
+    if args.deblur_only:
+        if args.deblur == "none":
+            parser.error("--deblur-only requires a Restormer --deblur mode")
+        result = deblur_image(image, args.deblur, Path(args.model_root), args.tile, args.system_ram_gb)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result.save(output_path, format="PNG")
+        return 0
+
+    if args.deblur != "none":
+        image = deblur_image(image, args.deblur, Path(args.model_root), args.tile, args.system_ram_gb)
+
     spec = MODELS[args.mode]
     model_dir = Path(args.model_root) / spec["download_dir"]
 
@@ -484,13 +579,6 @@ def main() -> int:
     backend = "MLX" if spec["kind"] == "mlx" else "PyTorch MPS via Spandrel"
     print(f"      Model:  {spec['display_name']} via {backend}", flush=True)
     print("      Ensuring model weights...", flush=True)
-
-    with Image.open(input_path) as opened:
-        exif = opened.getexif()
-        icc_profile = opened.info.get("icc_profile")
-        xmp = opened.info.get("xmp") or opened.info.get("XML:com.adobe.xmp")
-        source_info = dict(opened.info)
-        image = ImageOps.exif_transpose(opened).convert("RGB")
 
     width, height = image.size
     target_width, target_height = compute_target_size(width, height, args.short_edge, args.max_long_edge)
@@ -525,25 +613,10 @@ def main() -> int:
         )
         native_output, _ = upsampler.enhance(np.asarray(image))
     else:
-        global torch, ImageModelDescriptor, ModelLoader
-        import torch
-        from spandrel import ImageModelDescriptor, ModelLoader
         selected_weight = model_dir / spec["files"]["main"]["filename"]
         if not selected_weight.exists():
             raise RuntimeError(f"{spec['display_name']} is not installed. Run: vvd models install normal-hq")
-        device = choose_device()
-        print(f"      Device: {device}", flush=True)
-        print("      Loading model...", flush=True)
-        model = ModelLoader().load_from_file(selected_weight)
-        if not isinstance(model, ImageModelDescriptor):
-            raise RuntimeError("The downloaded model is not an image-to-image model")
-        model.to(device).eval()
-        input_tensor = pil_to_tensor(image)
-        if tile_size:
-            native_output = infer_tiled(model, input_tensor, device, int(model.scale), tile_size)
-        else:
-            print("      Processing full image...", flush=True)
-            native_output = infer_full(model, input_tensor, device)
+        native_output, _ = run_spandrel_model(selected_weight, image, tile_size)
 
     result = Image.fromarray(native_output, mode="RGB")
     if result.size != (target_width, target_height):
@@ -585,6 +658,12 @@ model_is_installed() {
       ;;
     normal-hq)
       [[ -f "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors" ]]
+      ;;
+    deblur-motion)
+      [[ -f "$MODEL_ROOT/restormer/motion/motion_deblurring.pth" ]]
+      ;;
+    deblur-defocus)
+      [[ -f "$MODEL_ROOT/restormer/defocus/single_image_defocus_deblurring.pth" ]]
       ;;
     advanced|maximum)
       [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
@@ -642,7 +721,7 @@ system_ram_gb() {
 minimum_ram_for_model() {
   case "$1" in
     fast) echo 8 ;;
-    normal|normal-hq|advanced) echo 16 ;;
+    normal|normal-hq|advanced|deblur-motion|deblur-defocus) echo 16 ;;
     maximum) echo 24 ;;
     *) echo 0 ;;
   esac
@@ -652,15 +731,17 @@ if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
         model_is_installed normal-hq && NORMAL_HQ=true
         model_is_installed advanced && ADVANCED=true
         model_is_installed maximum && MAXIMUM=true
-        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM"
+        model_is_installed deblur-motion && DEBLUR_MOTION=true
+        model_is_installed deblur-defocus && DEBLUR_DEFOCUS=true
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s,"deblur-motion":%s,"deblur-defocus":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS"
       else
-        for MODEL_ID in fast normal normal-hq advanced maximum; do
+        for MODEL_ID in fast normal normal-hq advanced maximum deblur-motion deblur-defocus; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -707,6 +788,16 @@ if [[ "${1:-}" == "models" ]]; then
             "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.safetensors" \
             "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors"
           ;;
+        deblur-motion)
+          download_model_file \
+            "https://github.com/swz30/Restormer/releases/download/v1.0/motion_deblurring.pth" \
+            "$MODEL_ROOT/restormer/motion/motion_deblurring.pth"
+          ;;
+        deblur-defocus)
+          download_model_file \
+            "https://github.com/swz30/Restormer/releases/download/v1.0/single_image_defocus_deblurring.pth" \
+            "$MODEL_ROOT/restormer/defocus/single_image_defocus_deblurring.pth"
+          ;;
         advanced|maximum)
           download_model_file \
             "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/seedvr2_ema_3b_fp16.safetensors" \
@@ -716,7 +807,7 @@ if [[ "${1:-}" == "models" ]]; then
             "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
           ;;
         *)
-          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum|deblur-motion|deblur-defocus" >&2
           exit 2
           ;;
       esac
@@ -729,8 +820,10 @@ if [[ "${1:-}" == "models" ]]; then
         fast) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3" ;;
         normal) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus" ;;
         normal-hq) rm -rf "$MODEL_ROOT/nomos-webphoto-esrgan" ;;
+        deblur-motion) rm -rf "$MODEL_ROOT/restormer/motion" ;;
+        deblur-defocus) rm -rf "$MODEL_ROOT/restormer/defocus" ;;
         advanced|maximum) rm -rf "$MODEL_ROOT/SEEDVR2" ;;
-        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum" >&2; exit 2 ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum|deblur-motion|deblur-defocus" >&2; exit 2 ;;
       esac
       echo "Deleted model: $MODEL_ID"
       exit 0
@@ -763,11 +856,17 @@ Modes:
   advanced  Native MLX SeedVR2 3B restoration with 8-bit quantization.
   maximum   Native MLX SeedVR2 3B restoration at source precision.
 
+Optional preprocessing:
+  deblur-motion   Restormer correction for camera shake, movement, and directional blur.
+  deblur-defocus  Restormer correction for out-of-focus and lens blur.
+
 Options:
   --mode MODE                  fast, normal, normal-hq, advanced, or maximum
   --fast                       Alias for --mode fast
   --normal                     Alias for --mode normal
   --advanced                   Alias for --mode advanced
+  --deblur none|deblur-motion|deblur-defocus
+                               Optional Restormer pass before upscaling. Default: none
   --scale N                    Multiply the source width and height by N. Files only.
   --resolution N               Target short edge in pixels. Default: 2048
   --max-resolution N           Maximum long edge. Default: 4096
@@ -820,6 +919,7 @@ PROGRESS_INTERVAL="10"
 TILE_MODE="auto"
 DENOISE_STRENGTH="0.5"
 QUALITY="90"
+DEBLUR="none"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -846,6 +946,10 @@ while [[ $# -gt 0 ]]; do
     --maximum)
       MODE="maximum"
       shift
+      ;;
+    --deblur)
+      DEBLUR="${2:?Missing value for --deblur}"
+      shift 2
       ;;
     --model)
       echo "Vivid only supports SeedVR2 3B; --model is not available." >&2
@@ -905,11 +1009,30 @@ case "$MODE" in
     ;;
 esac
 
+case "$DEBLUR" in
+  none|deblur-motion|deblur-defocus) ;;
+  *)
+    echo "--deblur must be none, deblur-motion, or deblur-defocus" >&2
+    exit 2
+    ;;
+esac
+
 AVAILABLE_RAM="$(system_ram_gb)"
 REQUIRED_RAM="$(minimum_ram_for_model "$MODE")"
 if (( AVAILABLE_RAM > 0 && REQUIRED_RAM > AVAILABLE_RAM )); then
   echo "$MODE requires at least $REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
   exit 1
+fi
+if [[ "$DEBLUR" != "none" ]]; then
+  DEBLUR_REQUIRED_RAM="$(minimum_ram_for_model "$DEBLUR")"
+  if (( AVAILABLE_RAM > 0 && DEBLUR_REQUIRED_RAM > AVAILABLE_RAM )); then
+    echo "$DEBLUR requires at least $DEBLUR_REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
+    exit 1
+  fi
+  if ! model_is_installed "$DEBLUR"; then
+    echo "$DEBLUR is not installed. Run: vvd models install $DEBLUR" >&2
+    exit 1
+  fi
 fi
 if [[ "$MODE" == "fast" && "$TILE_MODE" == "auto" && "$AVAILABLE_RAM" -gt 0 && "$AVAILABLE_RAM" -le 8 ]]; then
   TILE_MODE="on"
@@ -1081,10 +1204,34 @@ fi
 
 START_SECONDS=$SECONDS
 
+PROCESSING_INPUT="$INPUT"
+DEBLUR_OUTPUT=""
+if [[ "$DEBLUR" != "none" ]]; then
+  DEBLUR_OUTPUT="${OUTPUT%.*}.vivid-deblur-temp.png"
+  set +e
+  "$PYTHON" -u "$UPSCALE_HELPER" \
+    "$INPUT" "$DEBLUR_OUTPUT" \
+    --model-root "$MODEL_ROOT" \
+    --mode fast \
+    --deblur "$DEBLUR" \
+    --deblur-only \
+    --short-edge "$RESOLUTION" \
+    --max-long-edge "$MAX_RESOLUTION" \
+    --tile "$TILE_MODE" \
+    --system-ram-gb "$AVAILABLE_RAM"
+  STATUS=$?
+  set -e
+  if [[ "$STATUS" -ne 0 ]]; then
+    rm -f "$DEBLUR_OUTPUT"
+    exit "$STATUS"
+  fi
+  PROCESSING_INPUT="$DEBLUR_OUTPUT"
+fi
+
 if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; then
   set +e
   "$PYTHON" -u "$UPSCALE_HELPER" \
-    "$INPUT" "$OUTPUT" \
+    "$PROCESSING_INPUT" "$OUTPUT" \
     --model-root "$MODEL_ROOT" \
     --mode "$MODE" \
     --short-edge "$RESOLUTION" \
@@ -1092,7 +1239,8 @@ if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; the
     --tile "$TILE_MODE" \
     --system-ram-gb "$AVAILABLE_RAM" \
     --denoise-strength "$DENOISE_STRENGTH" \
-    --quality "$QUALITY"
+    --quality "$QUALITY" \
+    --metadata-source "$INPUT"
   STATUS=$?
   set -e
 else
@@ -1103,7 +1251,7 @@ else
   fi
 
   MFLUX_ARGS=(
-    --image-path "$INPUT"
+    --image-path "$PROCESSING_INPUT"
     --model "$MODEL_ROOT/SEEDVR2"
     --resolution "$RESOLUTION"
     --seed "$SEED"
@@ -1158,6 +1306,10 @@ else
     STATUS=$?
     set -e
   fi
+fi
+
+if [[ -n "$DEBLUR_OUTPUT" ]]; then
+  rm -f "$DEBLUR_OUTPUT"
 fi
 
 ELAPSED=$((SECONDS - START_SECONDS))

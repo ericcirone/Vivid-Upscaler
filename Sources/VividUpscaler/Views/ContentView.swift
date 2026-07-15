@@ -30,7 +30,7 @@ struct ContentView: View {
         .task { await store.refreshSetupState() }
         .sheet(isPresented: $store.showOnboarding) {
             ModelOnboardingView(store: store)
-                .interactiveDismissDisabled(store.installedModelIDs.isEmpty)
+                .interactiveDismissDisabled(!store.hasInstalledUpscaleModel)
         }
         .sheet(isPresented: $isShowingLog) {
             ProcessingLogView(store: store)

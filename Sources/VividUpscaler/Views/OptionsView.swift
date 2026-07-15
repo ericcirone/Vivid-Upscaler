@@ -19,6 +19,28 @@ struct OptionsView: View {
                     .foregroundStyle(store.mode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)
             }
 
+            Section("Deblur") {
+                Picker("Preprocessing", selection: $store.deblurMode) {
+                    ForEach(DeblurMode.allCases) { deblurMode in
+                        Text(deblurMode.title)
+                            .tag(deblurMode)
+                            .disabled(deblurMode.minimumRAMGB > store.systemRAMGB)
+                    }
+                }
+                Text(store.deblurMode.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if store.deblurMode != .none {
+                    Text("Runs before upscaling · Requires \(store.deblurMode.minimumRAMGB) GB RAM")
+                        .font(.caption2)
+                        .foregroundStyle(store.deblurMode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)
+                } else {
+                    Text("Vivid does not guess the blur type; choose Motion Blur or Out of Focus when needed.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Size") {
                 Picker("Sizing", selection: $store.sizingKind) {
                     ForEach(SizingKind.allCases) { kind in Text(kind.title).tag(kind) }

@@ -10,7 +10,7 @@ struct ModelOnboardingView: View {
     @State private var installError: String?
     @State private var pendingDeletion: ModelInfo?
 
-    private var isManaging: Bool { !store.installedModelIDs.isEmpty }
+    private var isManaging: Bool { store.hasInstalledUpscaleModel }
     private var selectedDownloads: [String] {
         ModelInfo.choices.map(\.id).filter { selection.contains($0) && !store.installedModelIDs.contains($0) }
     }
@@ -156,7 +156,7 @@ struct ModelOnboardingView: View {
         guard !isManaging else { return }
         if let preferred = ModelInfo.info(for: "normal"), store.canInstall(preferred) {
             selection.insert(preferred.id)
-        } else if let fallback = ModelInfo.choices.first(where: store.canInstall) {
+        } else if let fallback = ModelInfo.upscaleChoices.first(where: store.canInstall) {
             selection.insert(fallback.id)
         }
     }

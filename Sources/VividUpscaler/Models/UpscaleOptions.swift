@@ -102,6 +102,7 @@ enum OutputQualityPreset: Int, CaseIterable, Identifiable {
 
 struct UpscaleOptions {
     var mode: UpscaleMode
+    var deblurMode: DeblurMode = .none
     var sizingKind: SizingKind
     var scale: Double
     var resolution: Int
@@ -121,7 +122,8 @@ struct UpscaleOptions {
 
     func outputURL(for inputURL: URL) -> URL {
         let ext = format.fileExtension(for: inputURL)
-        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)-\(sizingToken).\(ext)"
+        let deblurToken = deblurMode == .none ? "" : "-\(deblurMode.rawValue)"
+        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)\(deblurToken)-\(sizingToken).\(ext)"
         return inputURL.deletingLastPathComponent().appendingPathComponent(filename)
     }
 }

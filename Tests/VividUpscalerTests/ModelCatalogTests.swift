@@ -5,8 +5,9 @@ import Testing
 struct ModelCatalogTests {
     @Test("Catalog exposes every processing mode")
     func exposesEveryMode() {
-        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum"])
-        #expect(Set(ModelInfo.choices.map(\.mode)) == Set(UpscaleMode.allCases))
+        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum", "deblur-motion", "deblur-defocus"])
+        #expect(Set(ModelInfo.choices.compactMap(\.mode)) == Set(UpscaleMode.allCases))
+        #expect(Set(ModelInfo.choices.compactMap(\.deblurMode)) == Set([DeblurMode.motion, DeblurMode.defocus]))
     }
 
     @Test("Minimum RAM policy matches the catalog")
@@ -17,6 +18,8 @@ struct ModelCatalogTests {
         #expect(requirements["normal-hq"] == 16)
         #expect(requirements["advanced"] == 16)
         #expect(requirements["maximum"] == 24)
+        #expect(requirements["deblur-motion"] == 16)
+        #expect(requirements["deblur-defocus"] == 16)
     }
 
     @Test("Catalog uses the requested model and backend mapping")
@@ -32,6 +35,10 @@ struct ModelCatalogTests {
         #expect(catalog["advanced"]?.1 == "Native MLX")
         #expect(catalog["maximum"]?.0 == "SeedVR2 3B source precision")
         #expect(catalog["maximum"]?.1 == "Native MLX")
+        #expect(catalog["deblur-motion"]?.0 == "Restormer Motion Deblurring")
+        #expect(catalog["deblur-motion"]?.1 == "PyTorch MPS")
+        #expect(catalog["deblur-defocus"]?.0 == "Restormer Single-Image Defocus Deblurring")
+        #expect(catalog["deblur-defocus"]?.1 == "PyTorch MPS")
     }
 
     @Test("Models below the machine RAM threshold are rejected")
@@ -53,5 +60,9 @@ struct ModelCatalogTests {
         #expect(store.canInstall(ModelInfo.info(for: "fast")!))
         #expect(!store.canInstall(ModelInfo.info(for: "normal")!))
         #expect(!store.canInstall(ModelInfo.info(for: "maximum")!))
+        store.installedModelIDs = ["deblur-motion"]
+        #expect(!store.hasInstalledUpscaleModel)
+        store.installedModelIDs.insert("fast")
+        #expect(store.hasInstalledUpscaleModel)
     }
 }

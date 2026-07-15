@@ -20,6 +20,7 @@ final class UpscaleStore {
 
     var inputURL: URL?
     var mode: UpscaleMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
+    var deblurMode: DeblurMode { didSet { defaults.set(deblurMode.rawValue, forKey: "deblurMode") } }
     var sizingKind: SizingKind { didSet { defaults.set(sizingKind.rawValue, forKey: "sizingKind") } }
     var scale: Double { didSet { defaults.set(scale, forKey: "scale") } }
     var resolution: Int { didSet { defaults.set(resolution, forKey: "resolution") } }
@@ -49,6 +50,8 @@ final class UpscaleStore {
         systemRAMGB = Int(systemMemoryBytes / 1_073_741_824)
         let savedMode = UpscaleMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .normal
         mode = savedMode.minimumRAMGB <= systemRAMGB ? savedMode : (systemRAMGB >= 16 ? .normal : .fast)
+        let savedDeblurMode = DeblurMode(rawValue: defaults.string(forKey: "deblurMode") ?? "") ?? .none
+        deblurMode = savedDeblurMode.minimumRAMGB <= systemRAMGB ? savedDeblurMode : .none
         sizingKind = SizingKind(rawValue: defaults.string(forKey: "sizingKind") ?? "") ?? .scale
         scale = defaults.object(forKey: "scale") == nil ? 2 : defaults.double(forKey: "scale")
         resolution = defaults.object(forKey: "resolution") == nil ? 2048 : defaults.integer(forKey: "resolution")
@@ -61,6 +64,7 @@ final class UpscaleStore {
     var options: UpscaleOptions {
         UpscaleOptions(
             mode: mode,
+            deblurMode: deblurMode,
             sizingKind: sizingKind,
             scale: scale,
             resolution: resolution,
@@ -111,7 +115,7 @@ final class UpscaleStore {
     func refreshSetupState() async {
         do {
             installedModelIDs = try await cli.installedModels()
-            showOnboarding = installedModelIDs.isEmpty
+            showOnboarding = !hasInstalledUpscaleModel
         } catch {
             errorMessage = error.localizedDescription
             showOnboarding = true
@@ -142,6 +146,16 @@ final class UpscaleStore {
         guard installedModelIDs.contains(requiredModelID) else {
             showOnboarding = true
             return
+        }
+        if let deblurModelID = deblurMode.modelID {
+            guard deblurMode.minimumRAMGB <= systemRAMGB else {
+                errorMessage = "\(deblurMode.title) requires at least \(deblurMode.minimumRAMGB) GB of RAM. This Mac has \(systemRAMGB) GB."
+                return
+            }
+            guard installedModelIDs.contains(deblurModelID) else {
+                showOnboarding = true
+                return
+            }
         }
         guard let outputURL else { return }
         if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -215,7 +229,11 @@ final class UpscaleStore {
         guard ModelInfo.info(for: id) != nil else { throw ModelError.unknownModel(id) }
         try await cli.deleteModel(id)
         installedModelIDs = try await cli.installedModels()
-        showOnboarding = installedModelIDs.isEmpty
+        showOnboarding = !hasInstalledUpscaleModel
+    }
+
+    var hasInstalledUpscaleModel: Bool {
+        ModelInfo.upscaleChoices.contains { installedModelIDs.contains($0.id) }
     }
 
     func installCommandLineTool() async {
