@@ -171,7 +171,7 @@ actor VividCLI {
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
-            && version == "19"
+            && version == "20"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {
@@ -303,8 +303,15 @@ actor VividCLI {
         return min(max(value / 100, 0), 1)
     }
 
-    nonisolated private static func event(for line: String) -> Event {
+    nonisolated static func event(for line: String) -> Event {
+        if line.contains("[progress]"), let fraction = percentage(in: line) {
+            let message = line
+                .replacingOccurrences(of: #"^.*\[progress\]\s*[0-9]{1,3}(?:\.[0-9]+)?%\s*"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            return Event(fraction: fraction, message: message.isEmpty ? "Upscaling image" : message)
+        }
         if line.contains("[1/3]") { return Event(fraction: 0.05, message: "Preparing") }
+        if line.contains("[2/3]") { return Event(fraction: 0.15, message: "Upscaling image") }
         if line.contains("Downloading") { return Event(fraction: 0.1, message: line.trimmingCharacters(in: .whitespaces)) }
         if line.contains("Loading model") { return Event(fraction: 0.2, message: "Loading model") }
         if line.contains("Processing full image") { return Event(fraction: nil, message: "Upscaling image") }

@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="19"
+RUNTIME_VERSION="20"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -725,6 +725,7 @@ def _generate_image(
     resolution,
     softness=0.0,
 ):
+    print("[progress] 30% Preparing image", flush=True)
     processed_image, true_height, true_width = SeedVR2Util.preprocess_image(
         image_path=image_path,
         resolution=resolution,
@@ -751,6 +752,7 @@ def _generate_image(
         scheduler="seedvr2_euler",
         model_config=self.model_config,
     )
+    print("[progress] 40% Encoding image", flush=True)
     initial_latent = VAEUtil.encode(
         vae=self.vae,
         image=processed_image,
@@ -772,6 +774,7 @@ def _generate_image(
     txt_pos = SeedVR2TextEmbeddings.load_positive()
     ctx = self.callbacks.start(seed=seed, prompt="", config=config)
     ctx.before_loop(latents)
+    print("[progress] 55% Restoring details", flush=True)
     for timestep in config.time_steps:
         model_input = mx.concatenate([latents, static_condition], axis=1)
         noise = self.transformer(
@@ -784,11 +787,14 @@ def _generate_image(
         mx.eval(latents)
     ctx.after_loop(latents)
 
+    print("[progress] 72% Decoding image", flush=True)
     decoded = VAEUtil.decode(vae=self.vae, latent=latents, tiling_config=self.tiling_config)
     decoded = decoded[:, :, :true_height, :true_width]
     style = color_reference[:, :, :true_height, :true_width]
+    print("[progress] 84% Correcting color", flush=True)
     decoded = _correct_color(decoded, style, vivid_args.color_correction)
     metadata = MetadataReader.read_all_metadata(image_path) if image_path else None
+    print("[progress] 90% Preparing output", flush=True)
     return ImageUtil.to_image(
         seed=seed,
         prompt="",
@@ -1108,7 +1114,54 @@ base = base.replace(
 )
 if 'subfolder="vae", variant="fp16"' not in base:
     raise RuntimeError("The pinned HYPIR FP16 VAE loader patch did not apply cleanly")
+if "[progress] 45% Encoding image" not in base:
+    base = base.replace(
+        "        # VAE encoding\n",
+        '        print("[progress] 45% Encoding image", flush=True)\n        # VAE encoding\n',
+    )
+    base = base.replace(
+        "        # Generator forward\n",
+        '        print("[progress] 60% Restoring details", flush=True)\n        # Generator forward\n',
+    )
+    base = base.replace(
+        "        # Decode\n",
+        '        print("[progress] 80% Decoding image", flush=True)\n        # Decode\n',
+    )
+if not all(marker in base for marker in (
+    "[progress] 45% Encoding image",
+    "[progress] 60% Restoring details",
+    "[progress] 80% Decoding image",
+)):
+    raise RuntimeError("The pinned HYPIR progress patch did not apply cleanly")
 base_path.write_text(base)
+
+test_path = destination / "test.py"
+test_source = test_path.read_text()
+if "[progress] 15% Loading HYPIR models" not in test_source:
+    test_source = test_source.replace(
+        '        print("Start loading models")\n',
+        '        print("[progress] 15% Loading HYPIR models", flush=True)\n        print("Start loading models")\n',
+    )
+    test_source = test_source.replace(
+        '        print(f"Models loaded in {time() - load_start:.2f} seconds.")\n',
+        '        print(f"Models loaded in {time() - load_start:.2f} seconds.")\n        print("[progress] 35% Models loaded", flush=True)\n',
+    )
+    test_source = test_source.replace(
+        '        result = model.enhance(\n',
+        '        print("[progress] 40% Preparing restoration", flush=True)\n        result = model.enhance(\n',
+    )
+    test_source = test_source.replace(
+        '        result.save(result_path)\n',
+        '        print("[progress] 90% Writing restored image", flush=True)\n        result.save(result_path)\n',
+    )
+if not all(marker in test_source for marker in (
+    "[progress] 15% Loading HYPIR models",
+    "[progress] 35% Models loaded",
+    "[progress] 40% Preparing restoration",
+    "[progress] 90% Writing restored image",
+)):
+    raise RuntimeError("The pinned HYPIR runner progress patch did not apply cleanly")
+test_path.write_text(test_source)
 PY
           ;;
         *)
@@ -1662,6 +1715,9 @@ if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; the
   STATUS=$?
   set -e
 elif [[ "$MODE" == "maximum-experimental" ]]; then
+  if [[ "$SHOW_PROGRESS" == "1" ]]; then
+    echo "[2/3] Upscaling"
+  fi
   HYPIR_WORK="$(mktemp -d "${TMPDIR:-/tmp}/vivid-hypir.XXXXXX")"
   mkdir -p "$HYPIR_WORK/input" "$HYPIR_WORK/output"
   "$PYTHON" - "$PROCESSING_INPUT" "$HYPIR_WORK/input/source.png" <<'PY'
@@ -1697,6 +1753,9 @@ PY
   set -e
 
   if [[ "$STATUS" -eq 0 ]]; then
+    if [[ "$SHOW_PROGRESS" == "1" ]]; then
+      echo "[progress] 92% Finalizing output"
+    fi
     set +e
     "$PYTHON" -u "$UPSCALE_HELPER" \
       "$HYPIR_WORK/output/result/source.png" "$OUTPUT" \
@@ -1766,6 +1825,9 @@ else
   fi
 
   if [[ "$STATUS" -eq 0 ]]; then
+    if [[ "$SHOW_PROGRESS" == "1" ]]; then
+      echo "[progress] 92% Finalizing output"
+    fi
     set +e
     "$PYTHON" -u "$UPSCALE_HELPER" \
       "$PROCESSING_OUTPUT" "$OUTPUT" \

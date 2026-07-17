@@ -237,7 +237,9 @@ final class UpscaleStore {
             upscaleStartedAt = startedAt
             try await cli.upscale(input: inputURL, output: destination, options: options) { [weak self] event in
                 Task { @MainActor in
-                    if let fraction = event.fraction { self?.progress = fraction }
+                    if let fraction = event.fraction, fraction >= (self?.progress ?? 0) {
+                        self?.progress = fraction
+                    }
                     self?.status = event.message
                     self?.logLines.append(event.message)
                 }
