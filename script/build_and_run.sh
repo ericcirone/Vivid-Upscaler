@@ -5,6 +5,7 @@ MODE="${1:-run}"
 APP_NAME="VividUpscaler"
 BUNDLE_ID="com.ericcirone.VividUpscaler"
 MIN_SYSTEM_VERSION="14.0"
+ICON_NAME="vivid-icon"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -15,6 +16,12 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 CLI_RESOURCES="$APP_RESOURCES/CLI"
+ICON_SOURCE="$ROOT_DIR/$ICON_NAME.icon"
+ASSETCATALOG_INFO_PLIST="$ROOT_DIR/.build/macos-assetcatalog-info.plist"
+
+if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
+  export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+fi
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -47,6 +54,21 @@ cp "$ROOT_DIR/install.sh" "$CLI_RESOURCES/install.sh"
 }
 chmod +x "$CLI_RESOURCES/vvd" "$CLI_RESOURCES/vivid_upscale.py" "$CLI_RESOURCES/vivid_seedvr2.py" "$CLI_RESOURCES/vivid_codeformer.py" "$CLI_RESOURCES/install.sh"
 
+# Compile the Icon Composer source directly. Keep vivid-icon.icon as the source
+# of truth instead of generating or maintaining a traditional icon set.
+xcrun actool "$ICON_SOURCE" \
+  --compile "$APP_RESOURCES" \
+  --output-format human-readable-text \
+  --notices \
+  --warnings \
+  --export-dependency-info "$ROOT_DIR/.build/macos-assetcatalog-dependencies" \
+  --output-partial-info-plist "$ASSETCATALOG_INFO_PLIST" \
+  --app-icon "$ICON_NAME" \
+  --compress-pngs \
+  --development-region en \
+  --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
+  --platform macosx
+
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -54,6 +76,8 @@ cat >"$INFO_PLIST" <<PLIST
 <dict>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+  <key>CFBundleIconFile</key><string>$ICON_NAME</string>
+  <key>CFBundleIconName</key><string>$ICON_NAME</string>
   <key>CFBundleName</key><string>Vivid Upscaler</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>$MIN_SYSTEM_VERSION</string>
