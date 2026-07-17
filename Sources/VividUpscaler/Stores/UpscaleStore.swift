@@ -234,7 +234,6 @@ final class UpscaleStore {
         guard ModelInfo.info(for: id) != nil else { throw ModelError.unknownModel(id) }
         try await cli.deleteModel(id)
         installedModelIDs = try await cli.installedModels()
-        showOnboarding = !hasInstalledUpscaleModel
     }
 
     var hasInstalledUpscaleModel: Bool {
