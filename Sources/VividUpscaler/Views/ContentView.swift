@@ -5,6 +5,7 @@ struct ContentView: View {
     @Bindable var store: UpscaleStore
     @State private var isDropTargeted = false
     @State private var isShowingLog = false
+    @State private var isShowingComparison = false
 
     var body: some View {
         HSplitView {
@@ -34,6 +35,12 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingLog) {
             ProcessingLogView(store: store)
+        }
+        .sheet(isPresented: $isShowingComparison) {
+            if let inputURL = store.inputURL,
+               let outputURL = store.completedOutputURL {
+                ComparisonPreviewView(originalURL: inputURL, upscaledURL: outputURL)
+            }
         }
         .alert("Vivid Upscaler", isPresented: Binding(
             get: { store.errorMessage != nil },
@@ -123,6 +130,7 @@ struct ContentView: View {
                 HStack {
                     Label(completionLabel, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     Spacer()
+                    Button("Preview") { isShowingComparison = true }
                     Button("Show in Finder") { store.revealOutput() }
                 }
             }
