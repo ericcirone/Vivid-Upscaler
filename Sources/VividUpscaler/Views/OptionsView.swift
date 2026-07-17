@@ -46,6 +46,52 @@ struct OptionsView: View {
                     .foregroundStyle(store.mode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)
             }
 
+            if store.mode.supportsSeedVR2Settings {
+                Section("SeedVR2 Restoration") {
+                    Picker("Preset", selection: $store.seedVR2Preset) {
+                        ForEach(SeedVR2Preset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    Text(store.seedVR2Preset.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if store.seedVR2Preset == .custom {
+                        LabeledContent("Input noise") {
+                            TextField("Input noise", value: $store.seedVR2InputNoiseScale, format: .number.precision(.fractionLength(2)))
+                                .frame(width: 72)
+                        }
+                        Slider(value: $store.seedVR2InputNoiseScale, in: 0...1, step: 0.01)
+                        LabeledContent("Latent noise") {
+                            TextField("Latent noise", value: $store.seedVR2LatentNoiseScale, format: .number.precision(.fractionLength(2)))
+                                .frame(width: 72)
+                        }
+                        Slider(value: $store.seedVR2LatentNoiseScale, in: 0...1, step: 0.01)
+                        Picker("Color correction", selection: $store.seedVR2ColorCorrection) {
+                            ForEach(SeedVR2ColorCorrection.allCases) { method in
+                                Text(method.title).tag(method)
+                            }
+                        }
+                        Text("Noise changes how the model reconstructs the image; increasing it does not simply increase quality.")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            if store.mode.supportsVariationSeed {
+                Section("Variation") {
+                    TextField("Variation Seed", value: $store.variationSeed, format: .number)
+                    Button("Try Another Variation", systemImage: "dice") {
+                        store.tryAnotherVariation()
+                    }
+                    Text("The seed selects a repeatable generative variation; its value is not a quality or strength setting.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Size") {
                 Picker("Sizing", selection: $store.sizingKind) {
                     ForEach(SizingKind.allCases) { kind in Text(kind.title).tag(kind) }

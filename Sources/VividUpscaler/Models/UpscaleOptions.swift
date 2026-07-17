@@ -108,6 +108,8 @@ enum OutputQualityPreset: Int, CaseIterable, Identifiable {
 struct UpscaleOptions {
     var mode: UpscaleMode
     var deblurMode: DeblurMode = .none
+    var generativeOptions: GenerativeOptions = .init()
+    var seedVR2Options: SeedVR2Options = .init()
     var sizingKind: SizingKind
     var scale: Double
     var resolution: Int

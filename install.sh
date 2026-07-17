@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="18"
+RUNTIME_VERSION="19"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -635,6 +635,178 @@ if __name__ == "__main__":
 PY
 chmod +x "$INSTALL_ROOT/vivid_upscale.py"
 
+cat > "$INSTALL_ROOT/vivid_seedvr2.py" <<'PY'
+#!/usr/bin/env python3
+"""Vivid's SeedVR2 adapter for the restoration controls not exposed by MFLUX."""
+from __future__ import annotations
+
+import argparse
+import sys
+
+import cv2
+import mlx.core as mx
+import numpy as np
+
+from mflux.models.common.config.config import Config
+from mflux.models.common.vae.vae_util import VAEUtil
+from mflux.models.seedvr2.cli.seedvr2_upscale import main
+from mflux.models.seedvr2.latent_creator.seedvr2_latent_creator import SeedVR2LatentCreator
+from mflux.models.seedvr2.model.seedvr2_text_encoder.text_embeddings import SeedVR2TextEmbeddings
+from mflux.models.seedvr2.variants.upscale.seedvr2 import SeedVR2
+from mflux.models.seedvr2.variants.upscale.seedvr2_util import SeedVR2Util
+from mflux.utils.image_util import ImageUtil
+from mflux.utils.metadata_reader import MetadataReader
+
+
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument("--input-noise-scale", type=float, default=0.0)
+parser.add_argument("--latent-noise-scale", type=float, default=0.0)
+parser.add_argument(
+    "--color-correction",
+    choices=["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"],
+    default="lab",
+)
+vivid_args, remaining_args = parser.parse_known_args()
+sys.argv = [sys.argv[0], *remaining_args]
+
+
+def _to_numpy(image: mx.array) -> np.ndarray:
+    return np.asarray(image.astype(mx.float32), dtype=np.float32)
+
+
+def _from_numpy(image: np.ndarray, dtype) -> mx.array:
+    return mx.array(image.astype(np.float32), dtype=mx.float32).astype(dtype)
+
+
+def _hsv_match(content: np.ndarray, style: np.ndarray) -> np.ndarray:
+    result = np.empty_like(content, dtype=np.float32)
+    for index in range(content.shape[0]):
+        content_rgb = np.clip((np.transpose(content[index], (1, 2, 0)) + 1.0) * 0.5, 0.0, 1.0)
+        style_rgb = np.clip((np.transpose(style[index], (1, 2, 0)) + 1.0) * 0.5, 0.0, 1.0)
+        content_hsv = cv2.cvtColor(content_rgb.astype(np.float32), cv2.COLOR_RGB2HSV)
+        style_hsv = cv2.cvtColor(style_rgb.astype(np.float32), cv2.COLOR_RGB2HSV)
+        content_hsv[..., 1] = SeedVR2Util._hist_match(content_hsv[..., 1], style_hsv[..., 1])
+        matched = np.clip(cv2.cvtColor(content_hsv, cv2.COLOR_HSV2RGB), 0.0, 1.0)
+        result[index] = np.transpose(matched * 2.0 - 1.0, (2, 0, 1))
+    return result
+
+
+def _correct_color(content: mx.array, style: mx.array, method: str) -> mx.array:
+    if method == "none":
+        return content
+    if method == "lab":
+        return SeedVR2Util.apply_color_correction(content, style)
+
+    content_np = _to_numpy(content)
+    style_np = _to_numpy(style)
+    if method == "wavelet":
+        corrected = SeedVR2Util._wavelet_reconstruction(content_np, style_np)
+    elif method == "wavelet_adaptive":
+        base = SeedVR2Util._wavelet_reconstruction(content_np, style_np)
+        corrected = _hsv_match(base, style_np)
+    elif method == "hsv":
+        corrected = _hsv_match(content_np, style_np)
+    elif method == "adain":
+        axes = (2, 3)
+        content_mean = content_np.mean(axis=axes, keepdims=True)
+        content_std = content_np.std(axis=axes, keepdims=True) + 1e-6
+        style_mean = style_np.mean(axis=axes, keepdims=True)
+        style_std = style_np.std(axis=axes, keepdims=True) + 1e-6
+        corrected = (content_np - content_mean) * (style_std / content_std) + style_mean
+    else:
+        raise ValueError(f"Unsupported color correction: {method}")
+    return _from_numpy(np.clip(corrected, -1.0, 1.0), content.dtype)
+
+
+def _generate_image(
+    self,
+    seed,
+    image_path,
+    resolution,
+    softness=0.0,
+):
+    processed_image, true_height, true_width = SeedVR2Util.preprocess_image(
+        image_path=image_path,
+        resolution=resolution,
+        softness=softness,
+    )
+    color_reference = processed_image
+    if vivid_args.input_noise_scale:
+        input_noise = mx.random.normal(
+            shape=processed_image.shape,
+            key=mx.random.key(seed ^ 0x56495649),
+        )
+        processed_image = mx.clip(
+            processed_image + input_noise * vivid_args.input_noise_scale,
+            -1.0,
+            1.0,
+        )
+
+    config = Config(
+        width=true_width,
+        height=true_height,
+        guidance=1.0,
+        num_inference_steps=1,
+        image_path=image_path,
+        scheduler="seedvr2_euler",
+        model_config=self.model_config,
+    )
+    initial_latent = VAEUtil.encode(
+        vae=self.vae,
+        image=processed_image,
+        tiling_config=self.tiling_config,
+    )
+    if vivid_args.latent_noise_scale:
+        latent_noise = mx.random.normal(
+            shape=initial_latent.shape,
+            key=mx.random.key(seed ^ 0x4C415445),
+        )
+        initial_latent = initial_latent + latent_noise * vivid_args.latent_noise_scale
+
+    static_condition = SeedVR2LatentCreator.create_condition(encoded_latent=initial_latent)
+    latents = SeedVR2LatentCreator.create_noise_latents(
+        seed=seed,
+        height=initial_latent.shape[-2],
+        width=initial_latent.shape[-1],
+    )
+    txt_pos = SeedVR2TextEmbeddings.load_positive()
+    ctx = self.callbacks.start(seed=seed, prompt="", config=config)
+    ctx.before_loop(latents)
+    for timestep in config.time_steps:
+        model_input = mx.concatenate([latents, static_condition], axis=1)
+        noise = self.transformer(
+            txt=txt_pos,
+            vid=model_input,
+            timestep=config.scheduler.timesteps[timestep],
+        )
+        latents = config.scheduler.step(noise=noise, timestep=timestep, latents=latents)
+        ctx.in_loop(timestep, latents)
+        mx.eval(latents)
+    ctx.after_loop(latents)
+
+    decoded = VAEUtil.decode(vae=self.vae, latent=latents, tiling_config=self.tiling_config)
+    decoded = decoded[:, :, :true_height, :true_width]
+    style = color_reference[:, :, :true_height, :true_width]
+    decoded = _correct_color(decoded, style, vivid_args.color_correction)
+    metadata = MetadataReader.read_all_metadata(image_path) if image_path else None
+    return ImageUtil.to_image(
+        seed=seed,
+        prompt="",
+        config=config,
+        quantization=self.bits,
+        decoded_latents=decoded,
+        generation_time=config.time_steps.format_dict["elapsed"],
+        init_metadata=metadata,
+    )
+
+
+SeedVR2.generate_image = _generate_image
+
+if __name__ == "__main__":
+    main()
+PY
+chmod +x "$INSTALL_ROOT/vivid_seedvr2.py"
+
 cat > "$BIN_DIR/vvd" <<'WRAPPER'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -646,6 +818,11 @@ if [[ -f "$SCRIPT_DIR/vivid_upscale.py" ]]; then
   UPSCALE_HELPER="$SCRIPT_DIR/vivid_upscale.py"
 else
   UPSCALE_HELPER="$INSTALL_ROOT/vivid_upscale.py"
+fi
+if [[ -f "$SCRIPT_DIR/vivid_seedvr2.py" ]]; then
+  SEEDVR2_HELPER="$SCRIPT_DIR/vivid_seedvr2.py"
+else
+  SEEDVR2_HELPER="$INSTALL_ROOT/vivid_seedvr2.py"
 fi
 MODEL_ROOT="$INSTALL_ROOT/models"
 ORIGINAL_CWD="$PWD"
@@ -1005,7 +1182,12 @@ Options:
   --tile auto|on|off           Tiling behavior. Default: auto
   --denoise-strength N         Fast mode denoise balance from 0 to 1. Default: 0.5
   --quality N                  JPG, JPEG XL, or WebP quality from 1 to 100. Default: 90
-  --seed N                     Random seed for SeedVR2 modes. Default: 42
+  --seed N                     Variation seed for generative modes. Default: 42
+  --seedvr2-preset PRESET      faithful, high-resolution-cleanup, softer-detail, or custom
+                               SeedVR2 modes only. Default: faithful
+  --input-noise-scale N        SeedVR2 input noise from 0 to 1
+  --latent-noise-scale N       SeedVR2 latent noise from 0 to 1
+  --color-correction METHOD    lab, wavelet, wavelet_adaptive, hsv, adain, or none
   --progress-interval N        Seconds between elapsed-time updates. Default: 10
   --no-progress                Disable wrapper progress messages
   --help                       Show this help
@@ -1018,7 +1200,7 @@ HELP
   exit 0
 fi
 
-if [[ ! -x "$PYTHON" || ! -f "$UPSCALE_HELPER" ]]; then
+if [[ ! -x "$PYTHON" || ! -f "$UPSCALE_HELPER" || ! -f "$SEEDVR2_HELPER" ]]; then
   echo "Vivid's runtime is not installed. Open Vivid Upscaler or run install.sh." >&2
   exit 1
 fi
@@ -1046,6 +1228,12 @@ RESOLUTION="2048"
 MAX_RESOLUTION="4096"
 SCALE=""
 SEED="42"
+SEED_REQUESTED="0"
+SEEDVR2_PRESET="faithful"
+SEEDVR2_SETTINGS_REQUESTED="0"
+INPUT_NOISE_SCALE=""
+LATENT_NOISE_SCALE=""
+COLOR_CORRECTION=""
 SHOW_PROGRESS="1"
 PROGRESS_INTERVAL="10"
 TILE_MODE="auto"
@@ -1117,6 +1305,27 @@ while [[ $# -gt 0 ]]; do
       ;;
     --seed)
       SEED="${2:?Missing value for --seed}"
+      SEED_REQUESTED="1"
+      shift 2
+      ;;
+    --seedvr2-preset)
+      SEEDVR2_PRESET="${2:?Missing value for --seedvr2-preset}"
+      SEEDVR2_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --input-noise-scale)
+      INPUT_NOISE_SCALE="${2:?Missing value for --input-noise-scale}"
+      SEEDVR2_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --latent-noise-scale)
+      LATENT_NOISE_SCALE="${2:?Missing value for --latent-noise-scale}"
+      SEEDVR2_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --color-correction)
+      COLOR_CORRECTION="${2:?Missing value for --color-correction}"
+      SEEDVR2_SETTINGS_REQUESTED="1"
       shift 2
       ;;
     --progress-interval)
@@ -1152,6 +1361,65 @@ case "$DEBLUR" in
     exit 2
     ;;
 esac
+
+case "$SEEDVR2_PRESET" in
+  faithful)
+    : "${INPUT_NOISE_SCALE:=0.00}"
+    : "${LATENT_NOISE_SCALE:=0.00}"
+    : "${COLOR_CORRECTION:=lab}"
+    ;;
+  high-resolution-cleanup)
+    : "${INPUT_NOISE_SCALE:=0.15}"
+    : "${LATENT_NOISE_SCALE:=0.00}"
+    : "${COLOR_CORRECTION:=lab}"
+    ;;
+  softer-detail)
+    : "${INPUT_NOISE_SCALE:=0.00}"
+    : "${LATENT_NOISE_SCALE:=0.08}"
+    : "${COLOR_CORRECTION:=wavelet}"
+    ;;
+  custom)
+    : "${INPUT_NOISE_SCALE:=0.00}"
+    : "${LATENT_NOISE_SCALE:=0.00}"
+    : "${COLOR_CORRECTION:=lab}"
+    ;;
+  *)
+    echo "--seedvr2-preset must be faithful, high-resolution-cleanup, softer-detail, or custom" >&2
+    exit 2
+    ;;
+esac
+
+case "$COLOR_CORRECTION" in
+  lab|wavelet|wavelet_adaptive|hsv|adain|none) ;;
+  *)
+    echo "--color-correction must be lab, wavelet, wavelet_adaptive, hsv, adain, or none" >&2
+    exit 2
+    ;;
+esac
+
+if ! "$PYTHON" - "$INPUT_NOISE_SCALE" "$LATENT_NOISE_SCALE" <<'PY'
+import sys
+
+try:
+    values = [float(value) for value in sys.argv[1:]]
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if all(0.0 <= value <= 1.0 for value in values) else 1)
+PY
+then
+  echo "--input-noise-scale and --latent-noise-scale must be numbers from 0 to 1" >&2
+  exit 2
+fi
+
+if [[ "$SEEDVR2_SETTINGS_REQUESTED" == "1" && "$MODE" != "advanced" && "$MODE" != "maximum" ]]; then
+  echo "SeedVR2 restoration settings require --mode advanced or --mode maximum" >&2
+  exit 2
+fi
+
+if [[ "$SEED_REQUESTED" == "1" && "$MODE" != "advanced" && "$MODE" != "maximum" && "$MODE" != "maximum-experimental" ]]; then
+  echo "--seed requires --mode advanced, --mode maximum, or --mode maximum-experimental" >&2
+  exit 2
+fi
 
 AVAILABLE_RAM="$(system_ram_gb)"
 REQUIRED_RAM="$(minimum_ram_for_model "$MODE")"
@@ -1316,16 +1584,21 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
       echo "      Model:  SeedVR2 3B 8-bit via native MLX"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
+      echo "      Variation seed: $SEED"
+      echo "      SeedVR2 preset: $SEEDVR2_PRESET ($INPUT_NOISE_SCALE input noise, $LATENT_NOISE_SCALE latent noise, $COLOR_CORRECTION color)"
       ;;
     maximum-experimental)
       echo "      Model:  HYPIR-SD2 via PyTorch MPS (experimental)"
       echo "      Model files: $MODEL_ROOT/HYPIR"
       echo "      Warning: generative restoration may reconstruct plausible details"
+      echo "      Variation seed: $SEED"
       ;;
     maximum)
       echo "      Model:  SeedVR2 3B source precision via native MLX"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
+      echo "      Variation seed: $SEED"
+      echo "      SeedVR2 preset: $SEEDVR2_PRESET ($INPUT_NOISE_SCALE input noise, $LATENT_NOISE_SCALE latent noise, $COLOR_CORRECTION color)"
       ;;
     normal)
       echo "      Model:  mlx-community/Real-ESRGAN-x4plus"
@@ -1458,7 +1731,12 @@ else
   if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
     MFLUX_ARGS+=(--low-ram)
   fi
-  "$PYTHON" -u -m mflux.models.seedvr2.cli.seedvr2_upscale "${MFLUX_ARGS[@]}" &
+  MFLUX_ARGS+=(
+    --input-noise-scale "$INPUT_NOISE_SCALE"
+    --latent-noise-scale "$LATENT_NOISE_SCALE"
+    --color-correction "$COLOR_CORRECTION"
+  )
+  "$PYTHON" -u "$SEEDVR2_HELPER" "${MFLUX_ARGS[@]}" &
   CHILD_PID=$!
 
   forward_signal() {

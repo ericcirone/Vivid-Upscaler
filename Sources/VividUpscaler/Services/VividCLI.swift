@@ -85,8 +85,26 @@ actor VividCLI {
         onEvent: @escaping @Sendable (Event) -> Void
     ) async throws {
         try await ensureRuntime(onEvent: onEvent)
+        let arguments = Self.upscaleArguments(input: input, output: output, options: options)
+
+        try await run(arguments: arguments) { line in
+            onEvent(Self.event(for: line))
+        }
+    }
+
+    static func upscaleArguments(input: URL, output: URL, options: UpscaleOptions) -> [String] {
         var arguments = [input.path, output.path, "--mode", options.mode.rawValue]
         arguments += ["--deblur", options.deblurMode.rawValue]
+        if options.mode.supportsVariationSeed {
+            arguments += ["--seed", String(options.generativeOptions.variationSeed)]
+        }
+        if options.mode.supportsSeedVR2Settings {
+            let settings = options.seedVR2Options.resolvedSettings
+            arguments += ["--seedvr2-preset", options.seedVR2Options.preset.rawValue]
+            arguments += ["--input-noise-scale", String(settings.inputNoiseScale)]
+            arguments += ["--latent-noise-scale", String(settings.latentNoiseScale)]
+            arguments += ["--color-correction", settings.colorCorrection.rawValue]
+        }
         switch options.sizingKind {
         case .scale:
             arguments += ["--scale", String(options.scale)]
@@ -96,10 +114,7 @@ actor VividCLI {
         if options.format.supportsQuality(for: input) {
             arguments += ["--quality", String(Int(options.quality.rounded()))]
         }
-
-        try await run(arguments: arguments) { line in
-            onEvent(Self.event(for: line))
-        }
+        return arguments
     }
 
     func cancel() {
@@ -155,7 +170,8 @@ actor VividCLI {
         let version = try? String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
-            && version == "18"
+            && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
+            && version == "19"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

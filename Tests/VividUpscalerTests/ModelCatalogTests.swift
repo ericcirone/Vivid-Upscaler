@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import VividUpscaler
 
@@ -45,6 +46,43 @@ struct ModelCatalogTests {
         #expect(catalog["deblur-motion"]?.1 == "PyTorch MPS")
         #expect(catalog["deblur-defocus"]?.0 == "Restormer Single-Image Defocus Deblurring")
         #expect(catalog["deblur-defocus"]?.1 == "PyTorch MPS")
+    }
+
+    @Test("Generative and SeedVR2 capabilities match the model contract")
+    func generativeCapabilities() {
+        #expect(UpscaleMode.allCases.filter(\.supportsVariationSeed) == [.advanced, .maximum, .maximumExperimental])
+        #expect(UpscaleMode.allCases.filter(\.supportsSeedVR2Settings) == [.advanced, .maximum])
+        #expect(SeedVR2Preset.faithful.settings == .init(inputNoiseScale: 0, latentNoiseScale: 0, colorCorrection: .lab))
+        #expect(SeedVR2Preset.highResolutionCleanup.settings == .init(inputNoiseScale: 0.15, latentNoiseScale: 0, colorCorrection: .lab))
+        #expect(SeedVR2Preset.softerDetail.settings == .init(inputNoiseScale: 0, latentNoiseScale: 0.08, colorCorrection: .wavelet))
+        #expect(SeedVR2Options(preset: .custom, customInputNoiseScale: -1, customLatentNoiseScale: 2).resolvedSettings == .init(inputNoiseScale: 0, latentNoiseScale: 1, colorCorrection: .lab))
+    }
+
+    @Test("App options forward variation and restoration settings to the CLI")
+    func cliRestorationArguments() {
+        let input = URL(fileURLWithPath: "/tmp/input.png")
+        let output = URL(fileURLWithPath: "/tmp/output.png")
+        let options = UpscaleOptions(
+            mode: .advanced,
+            generativeOptions: .init(variationSeed: 123),
+            seedVR2Options: .init(preset: .softerDetail),
+            sizingKind: .scale,
+            scale: 2,
+            resolution: 2048,
+            maxResolution: 4096,
+            format: .png,
+            quality: 90
+        )
+
+        let arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        func containsPair(_ flag: String, _ value: String) -> Bool {
+            zip(arguments, arguments.dropFirst()).contains { $0 == flag && $1 == value }
+        }
+        #expect(containsPair("--seed", "123"))
+        #expect(containsPair("--seedvr2-preset", "softer-detail"))
+        #expect(containsPair("--input-noise-scale", "0.0"))
+        #expect(containsPair("--latent-noise-scale", "0.08"))
+        #expect(containsPair("--color-correction", "wavelet"))
     }
 
     @Test("Models below the machine RAM threshold are rejected")

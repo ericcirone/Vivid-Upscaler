@@ -77,8 +77,9 @@ vvd input.jpg output.jpg --scale 2
 vvd input.jpg output.png --mode fast --scale 4
 vvd input.jpg output.webp --mode normal-hq --resolution 2048
 vvd input.jpg output.png --mode normal --deblur deblur-motion --scale 2
-vvd input.jpg output.jxl --mode advanced --scale 2 --quality 90
+vvd input.jpg output.jxl --mode advanced --scale 2 --quality 90 --seed 42
 vvd input.jpg output.png --mode maximum --tile on
+vvd input.jpg output.png --mode maximum --seedvr2-preset softer-detail --seed 123
 
 vvd models status
 vvd models status --json
@@ -99,7 +100,11 @@ Run `vvd --help` for the complete option list. The main options are:
 | `--tile auto\|on\|off` | Control lower-memory processing; default is `auto` |
 | `--quality N` | JPG, JPEG XL, or WebP quality from 1 to 100; default is 90 |
 | `--denoise-strength N` | Fast-mode denoise balance from 0 to 1; default is 0.5 |
-| `--seed N` | SeedVR2 random seed; default is 42 |
+| `--seed N` | Variation seed for `advanced`, `maximum`, and `maximum-experimental`; default is 42 |
+| `--seedvr2-preset PRESET` | `faithful`, `high-resolution-cleanup`, `softer-detail`, or `custom`; SeedVR2 modes only; default is `faithful` |
+| `--input-noise-scale N` | SeedVR2 input noise from 0 to 1; preset value unless explicitly overridden |
+| `--latent-noise-scale N` | SeedVR2 latent noise from 0 to 1; preset value unless explicitly overridden |
+| `--color-correction METHOD` | `lab`, `wavelet`, `wavelet_adaptive`, `hsv`, `adain`, or `none`; SeedVR2 modes only |
 | `--no-progress` | Hide wrapper progress messages |
 
 A bare output filename is saved beside the input file. Include a slash, such as `./output.jpg`, to explicitly save relative to the current directory. When no output is supplied, Vivid writes an `_upscaled` file beside the input. The CLI currently processes one image at a time.

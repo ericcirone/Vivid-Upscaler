@@ -21,6 +21,11 @@ final class UpscaleStore {
     var inputURL: URL?
     var mode: UpscaleMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
     var deblurMode: DeblurMode { didSet { defaults.set(deblurMode.rawValue, forKey: "deblurMode") } }
+    var variationSeed: Int { didSet { defaults.set(variationSeed, forKey: "variationSeed") } }
+    var seedVR2Preset: SeedVR2Preset { didSet { defaults.set(seedVR2Preset.rawValue, forKey: "seedVR2Preset") } }
+    var seedVR2InputNoiseScale: Double { didSet { defaults.set(seedVR2InputNoiseScale, forKey: "seedVR2InputNoiseScale") } }
+    var seedVR2LatentNoiseScale: Double { didSet { defaults.set(seedVR2LatentNoiseScale, forKey: "seedVR2LatentNoiseScale") } }
+    var seedVR2ColorCorrection: SeedVR2ColorCorrection { didSet { defaults.set(seedVR2ColorCorrection.rawValue, forKey: "seedVR2ColorCorrection") } }
     var sizingKind: SizingKind { didSet { defaults.set(sizingKind.rawValue, forKey: "sizingKind") } }
     var scale: Double { didSet { defaults.set(scale, forKey: "scale") } }
     var resolution: Int { didSet { defaults.set(resolution, forKey: "resolution") } }
@@ -59,6 +64,13 @@ final class UpscaleStore {
         mode = savedMode.minimumRAMGB <= systemRAMGB ? savedMode : (systemRAMGB >= 16 ? .normal : .fast)
         let savedDeblurMode = DeblurMode(rawValue: defaults.string(forKey: "deblurMode") ?? "") ?? .none
         deblurMode = savedDeblurMode.minimumRAMGB <= systemRAMGB ? savedDeblurMode : .none
+        variationSeed = defaults.object(forKey: "variationSeed") == nil
+            ? GenerativeOptions.defaultVariationSeed
+            : defaults.integer(forKey: "variationSeed")
+        seedVR2Preset = SeedVR2Preset(rawValue: defaults.string(forKey: "seedVR2Preset") ?? "") ?? .faithful
+        seedVR2InputNoiseScale = defaults.object(forKey: "seedVR2InputNoiseScale") == nil ? 0 : defaults.double(forKey: "seedVR2InputNoiseScale")
+        seedVR2LatentNoiseScale = defaults.object(forKey: "seedVR2LatentNoiseScale") == nil ? 0 : defaults.double(forKey: "seedVR2LatentNoiseScale")
+        seedVR2ColorCorrection = SeedVR2ColorCorrection(rawValue: defaults.string(forKey: "seedVR2ColorCorrection") ?? "") ?? .lab
         sizingKind = SizingKind(rawValue: defaults.string(forKey: "sizingKind") ?? "") ?? .scale
         scale = defaults.object(forKey: "scale") == nil ? 2 : defaults.double(forKey: "scale")
         resolution = defaults.object(forKey: "resolution") == nil ? 2048 : defaults.integer(forKey: "resolution")
@@ -72,6 +84,13 @@ final class UpscaleStore {
         UpscaleOptions(
             mode: mode,
             deblurMode: deblurMode,
+            generativeOptions: .init(variationSeed: variationSeed),
+            seedVR2Options: .init(
+                preset: seedVR2Preset,
+                customInputNoiseScale: seedVR2InputNoiseScale,
+                customLatentNoiseScale: seedVR2LatentNoiseScale,
+                customColorCorrection: seedVR2ColorCorrection
+            ),
             sizingKind: sizingKind,
             scale: scale,
             resolution: resolution,
@@ -79,6 +98,10 @@ final class UpscaleStore {
             format: format,
             quality: quality
         )
+    }
+
+    func tryAnotherVariation() {
+        variationSeed = Int.random(in: 0...Int(Int32.max))
     }
 
     var supportsOutputQuality: Bool {
