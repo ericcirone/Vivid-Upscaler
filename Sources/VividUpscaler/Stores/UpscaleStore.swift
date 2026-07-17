@@ -19,22 +19,22 @@ final class UpscaleStore {
     }
 
     var inputURL: URL?
-    var mode: UpscaleMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
-    var deblurMode: DeblurMode { didSet { defaults.set(deblurMode.rawValue, forKey: "deblurMode") } }
-    var faceRestoreEnabled: Bool { didSet { defaults.set(faceRestoreEnabled, forKey: "faceRestoreEnabled") } }
-    var codeFormerPreset: CodeFormerPreset { didSet { defaults.set(codeFormerPreset.rawValue, forKey: "codeFormerPreset") } }
-    var codeFormerFidelityWeight: Double { didSet { defaults.set(codeFormerFidelityWeight, forKey: "codeFormerFidelityWeight") } }
-    var variationSeed: Int { didSet { defaults.set(variationSeed, forKey: "variationSeed") } }
-    var seedVR2Preset: SeedVR2Preset { didSet { defaults.set(seedVR2Preset.rawValue, forKey: "seedVR2Preset") } }
-    var seedVR2InputNoiseScale: Double { didSet { defaults.set(seedVR2InputNoiseScale, forKey: "seedVR2InputNoiseScale") } }
-    var seedVR2LatentNoiseScale: Double { didSet { defaults.set(seedVR2LatentNoiseScale, forKey: "seedVR2LatentNoiseScale") } }
-    var seedVR2ColorCorrection: SeedVR2ColorCorrection { didSet { defaults.set(seedVR2ColorCorrection.rawValue, forKey: "seedVR2ColorCorrection") } }
-    var sizingKind: SizingKind { didSet { defaults.set(sizingKind.rawValue, forKey: "sizingKind") } }
-    var scale: Double { didSet { defaults.set(scale, forKey: "scale") } }
-    var resolution: Int { didSet { defaults.set(resolution, forKey: "resolution") } }
-    var maxResolution: Int { didSet { defaults.set(maxResolution, forKey: "maxResolution") } }
-    var format: OutputFormat { didSet { defaults.set(format.rawValue, forKey: "format") } }
-    var quality: Double { didSet { defaults.set(quality, forKey: "quality") } }
+    var mode: UpscaleMode
+    var deblurMode: DeblurMode
+    var faceRestoreEnabled: Bool
+    var codeFormerPreset: CodeFormerPreset
+    var codeFormerFidelityWeight: Double
+    var variationSeed: Int
+    var seedVR2Preset: SeedVR2Preset
+    var seedVR2InputNoiseScale: Double
+    var seedVR2LatentNoiseScale: Double
+    var seedVR2ColorCorrection: SeedVR2ColorCorrection
+    var sizingKind: SizingKind
+    var scale: Double
+    var resolution: Int
+    var maxResolution: Int
+    var format: OutputFormat
+    var quality: Double
     var isRunning = false
     var progress: Double?
     var status = "Drop a photo to begin"
@@ -51,39 +51,27 @@ final class UpscaleStore {
     var pendingOverwriteURL: URL?
 
     private let cli = VividCLI()
-    private let defaults = UserDefaults.standard
 
     let systemRAMGB: Int
 
     init(systemMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) {
-        let defaults = UserDefaults.standard
         systemRAMGB = Int(systemMemoryBytes / 1_073_741_824)
-        let savedModeID = defaults.string(forKey: "mode") ?? ""
-        let migratedModeID = savedModeID == "advanced-experimental" ? "maximum-experimental" : savedModeID
-        let savedMode = UpscaleMode(rawValue: migratedModeID) ?? .normal
-        if savedModeID != migratedModeID {
-            defaults.set(migratedModeID, forKey: "mode")
-        }
-        mode = savedMode.minimumRAMGB <= systemRAMGB ? savedMode : (systemRAMGB >= 16 ? .normal : .fast)
-        let savedDeblurMode = DeblurMode(rawValue: defaults.string(forKey: "deblurMode") ?? "") ?? .none
-        deblurMode = savedDeblurMode.minimumRAMGB <= systemRAMGB ? savedDeblurMode : .none
-        faceRestoreEnabled = defaults.bool(forKey: "faceRestoreEnabled") && systemRAMGB >= 8
-        codeFormerPreset = CodeFormerPreset(rawValue: defaults.string(forKey: "codeFormerPreset") ?? "") ?? .balanced
-        codeFormerFidelityWeight = defaults.object(forKey: "codeFormerFidelityWeight") == nil ? 0.7 : defaults.double(forKey: "codeFormerFidelityWeight")
-        variationSeed = defaults.object(forKey: "variationSeed") == nil
-            ? GenerativeOptions.defaultVariationSeed
-            : defaults.integer(forKey: "variationSeed")
-        seedVR2Preset = SeedVR2Preset(rawValue: defaults.string(forKey: "seedVR2Preset") ?? "") ?? .faithful
-        seedVR2InputNoiseScale = defaults.object(forKey: "seedVR2InputNoiseScale") == nil ? 0 : defaults.double(forKey: "seedVR2InputNoiseScale")
-        seedVR2LatentNoiseScale = defaults.object(forKey: "seedVR2LatentNoiseScale") == nil ? 0 : defaults.double(forKey: "seedVR2LatentNoiseScale")
-        seedVR2ColorCorrection = SeedVR2ColorCorrection(rawValue: defaults.string(forKey: "seedVR2ColorCorrection") ?? "") ?? .lab
-        sizingKind = SizingKind(rawValue: defaults.string(forKey: "sizingKind") ?? "") ?? .scale
-        scale = defaults.object(forKey: "scale") == nil ? 2 : defaults.double(forKey: "scale")
-        resolution = defaults.object(forKey: "resolution") == nil ? 2048 : defaults.integer(forKey: "resolution")
-        maxResolution = defaults.object(forKey: "maxResolution") == nil ? 4096 : defaults.integer(forKey: "maxResolution")
-        format = OutputFormat(rawValue: defaults.string(forKey: "format") ?? "") ?? .same
-        let savedQuality = defaults.object(forKey: "quality") == nil ? 90 : defaults.double(forKey: "quality")
-        quality = Double(OutputQualityPreset.nearest(to: savedQuality).rawValue)
+        mode = systemRAMGB >= 16 ? .normal : .fast
+        deblurMode = .none
+        faceRestoreEnabled = false
+        codeFormerPreset = .balanced
+        codeFormerFidelityWeight = 0.7
+        variationSeed = GenerativeOptions.defaultVariationSeed
+        seedVR2Preset = .faithful
+        seedVR2InputNoiseScale = 0
+        seedVR2LatentNoiseScale = 0
+        seedVR2ColorCorrection = .lab
+        sizingKind = .scale
+        scale = 2
+        resolution = 2048
+        maxResolution = 4096
+        format = .same
+        quality = Double(OutputQualityPreset.high.rawValue)
     }
 
     var options: UpscaleOptions {

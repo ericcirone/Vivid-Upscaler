@@ -20,6 +20,22 @@ struct VividUpscalerApp: App {
             }
         }
 
+        Window("Compare Images", id: "comparison-preview") {
+            if let inputURL = store.inputURL,
+               let outputURL = store.completedOutputURL {
+                ComparisonPreviewView(originalURL: inputURL, upscaledURL: outputURL)
+            } else {
+                ContentUnavailableView(
+                    "Preview Unavailable",
+                    systemImage: "photo.badge.exclamationmark",
+                    description: Text("Complete an upscale before opening the preview.")
+                )
+                .frame(minWidth: 760, minHeight: 560)
+            }
+        }
+        .defaultSize(width: 1_000, height: 720)
+        .windowResizability(.contentMinSize)
+
         Settings {
             SettingsView()
         }

@@ -155,4 +155,31 @@ struct ModelCatalogTests {
         #expect(store.deblurMode == .none)
         #expect(!store.faceRestoreEnabled)
     }
+
+    @Test("Store starts with default settings each time")
+    @MainActor
+    func storeStartsWithDefaultSettingsEachTime() {
+        let firstStore = UpscaleStore(systemMemoryBytes: 32 * 1_073_741_824)
+        firstStore.mode = .maximum
+        firstStore.deblurMode = .motion
+        firstStore.faceRestoreEnabled = true
+        firstStore.sizingKind = .resolution
+        firstStore.scale = 4
+        firstStore.resolution = 1_024
+        firstStore.maxResolution = 8_192
+        firstStore.format = .jpg
+        firstStore.quality = 60
+
+        let restartedStore = UpscaleStore(systemMemoryBytes: 32 * 1_073_741_824)
+
+        #expect(restartedStore.mode == .normal)
+        #expect(restartedStore.deblurMode == .none)
+        #expect(!restartedStore.faceRestoreEnabled)
+        #expect(restartedStore.sizingKind == .scale)
+        #expect(restartedStore.scale == 2)
+        #expect(restartedStore.resolution == 2_048)
+        #expect(restartedStore.maxResolution == 4_096)
+        #expect(restartedStore.format == .same)
+        #expect(restartedStore.quality == Double(OutputQualityPreset.high.rawValue))
+    }
 }

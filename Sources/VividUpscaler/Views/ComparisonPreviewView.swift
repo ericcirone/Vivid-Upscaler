@@ -7,7 +7,7 @@ struct ComparisonPreviewView: View {
     private let originalName: String
     private let upscaledName: String
 
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.displayScale) private var displayScale
     @State private var dividerPosition = 0.5
     @State private var isActualSize = false
@@ -34,7 +34,14 @@ struct ComparisonPreviewView: View {
                 )
             }
         }
-        .frame(minWidth: 760, idealWidth: 1_000, minHeight: 560, idealHeight: 720)
+        .frame(
+            minWidth: 760,
+            idealWidth: 1_000,
+            maxWidth: .infinity,
+            minHeight: 560,
+            idealHeight: 720,
+            maxHeight: .infinity
+        )
     }
 
     private var header: some View {
@@ -56,7 +63,7 @@ struct ComparisonPreviewView: View {
             }
             .help(isActualSize ? "Fit the image in the viewer" : "Show the upscaled image at one image pixel per screen pixel")
 
-            Button("Done") { dismiss() }
+            Button("Done") { dismissWindow(id: "comparison-preview") }
                 .keyboardShortcut(.cancelAction)
         }
         .padding(16)
