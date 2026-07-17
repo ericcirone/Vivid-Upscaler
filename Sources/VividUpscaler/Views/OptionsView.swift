@@ -114,6 +114,49 @@ struct OptionsView: View {
                 }
             }
 
+            if store.mode.supportsHYPIRSettings {
+                Section("HYPIR Restoration") {
+                    Picker("Preset", selection: $store.hypirPreset) {
+                        ForEach(HYPIRPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    Text(store.hypirPreset.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if store.hypirPreset == .custom {
+                        Picker("Patch size", selection: $store.hypirPatchSize) {
+                            ForEach(HYPIRSettings.supportedPatchSizes, id: \.self) { value in
+                                Text("\(value) px").tag(value)
+                            }
+                        }
+                        Picker("Patch stride", selection: $store.hypirPatchStride) {
+                            ForEach(HYPIRSettings.supportedPatchStrides(for: store.hypirPatchSize), id: \.self) { value in
+                                Text("\(value) px").tag(value)
+                            }
+                        }
+                        .onChange(of: store.hypirPatchSize) { _, patchSize in
+                            store.hypirPatchStride = HYPIRSettings.normalizedPatchStride(
+                                store.hypirPatchStride,
+                                patchSize: patchSize
+                            )
+                        }
+                        TextField("Prompt", text: $store.hypirPrompt, axis: .vertical)
+                            .lineLimit(2...4)
+                    } else if let settings = store.hypirPreset.settings {
+                        LabeledContent("Patch configuration", value: "\(settings.patchSize) / \(settings.patchStride)")
+                        Text(settings.prompt)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("Smaller strides increase overlap and processing time. Strong prompts can invent identity-sensitive detail.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+
             if store.mode.supportsVariationSeed {
                 Section("Variation") {
                     TextField("Variation Seed", value: $store.variationSeed, format: .number)

@@ -110,6 +110,10 @@ Run `vvd --help` for the complete option list. The main options are:
 | `--input-noise-scale N` | SeedVR2 input noise from 0 to 1; preset value unless explicitly overridden |
 | `--latent-noise-scale N` | SeedVR2 latent noise from 0 to 1; preset value unless explicitly overridden |
 | `--color-correction METHOD` | `lab`, `wavelet`, `wavelet_adaptive`, `hsv`, `adain`, or `none`; SeedVR2 modes only |
+| `--hypir-preset PRESET` | `natural`, `balanced`, `enhanced`, or `custom`; HYPIR only; default is `balanced` |
+| `--hypir-patch-size N` | Custom HYPIR patch size from 512 through 1024 in increments of 128 |
+| `--hypir-patch-stride N` | Custom HYPIR stride from 256 through patch size in increments of 128 |
+| `--hypir-prompt TEXT` | Custom HYPIR photographic-result prompt |
 | `--no-progress` | Hide wrapper progress messages |
 
 A bare output filename is saved beside the input file. Include a slash, such as `./output.jpg`, to explicitly save relative to the current directory. When no output is supplied, Vivid writes an `_upscaled` file beside the input. The CLI currently processes one image at a time.
@@ -129,6 +133,8 @@ A bare output filename is saved beside the input file. Include a slash, such as 
 | `face-restore` | CodeFormer v0.1.0 | PyTorch MPS via Vivid adapter | 8 GB | 16 GB | 24 GB | Detected-face restoration with an adjustable reconstruction/fidelity trade-off |
 
 SeedVR2 is intentionally limited to the 3B model. Advanced quantizes it to 8-bit at load time; Maximum keeps the source precision.
+
+HYPIR processes the requested output dimensions directly. Its `natural`, `balanced`, and `enhanced` presets control the photographic prompt and patch overlap; `balanced` is the default. The `custom` preset accepts an explicit prompt, patch size, and patch stride. Smaller strides increase overlap and processing time. For compatibility, the generic `--tile` mapping is used only when `--tile` is explicitly supplied without HYPIR preset settings.
 
 Maximum Experimental is an opt-in HYPIR-SD2 path. It may reconstruct plausible detail that was not present in the source, so avoid it for facial identity, text, or documentary-critical work. The official HYPIR implementation documents CUDA rather than Apple Silicon MPS; Vivid's MPS integration remains experimental. HYPIR's official repository also restricts commercial use without separate permission, even though its model repository displays an Apache 2.0 label; review and follow the more restrictive terms before enabling it in a commercial product.
 

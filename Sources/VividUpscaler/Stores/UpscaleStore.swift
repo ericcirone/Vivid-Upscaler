@@ -29,6 +29,10 @@ final class UpscaleStore {
     var seedVR2InputNoiseScale: Double
     var seedVR2LatentNoiseScale: Double
     var seedVR2ColorCorrection: SeedVR2ColorCorrection
+    var hypirPreset: HYPIRPreset
+    var hypirPatchSize: Int
+    var hypirPatchStride: Int
+    var hypirPrompt: String
     var sizingKind: SizingKind
     var scale: Double
     var resolution: Int
@@ -66,6 +70,10 @@ final class UpscaleStore {
         seedVR2InputNoiseScale = 0
         seedVR2LatentNoiseScale = 0
         seedVR2ColorCorrection = .lab
+        hypirPreset = .balanced
+        hypirPatchSize = 768
+        hypirPatchStride = 512
+        hypirPrompt = HYPIRSettings.balancedPrompt
         sizingKind = .scale
         scale = 2
         resolution = 2048
@@ -89,6 +97,12 @@ final class UpscaleStore {
                 customInputNoiseScale: seedVR2InputNoiseScale,
                 customLatentNoiseScale: seedVR2LatentNoiseScale,
                 customColorCorrection: seedVR2ColorCorrection
+            ),
+            hypirOptions: .init(
+                preset: hypirPreset,
+                customPatchSize: hypirPatchSize,
+                customPatchStride: hypirPatchStride,
+                customPrompt: hypirPrompt
             ),
             sizingKind: sizingKind,
             scale: scale,

@@ -51,14 +51,40 @@ struct ModelCatalogTests {
         #expect(catalog["face-restore"]?.1 == "PyTorch MPS via Vivid adapter")
     }
 
-    @Test("Generative and SeedVR2 capabilities match the model contract")
+    @Test("Generative restoration capabilities match the model contract")
     func generativeCapabilities() {
         #expect(UpscaleMode.allCases.filter(\.supportsVariationSeed) == [.advanced, .maximum, .maximumExperimental])
         #expect(UpscaleMode.allCases.filter(\.supportsSeedVR2Settings) == [.advanced, .maximum])
+        #expect(UpscaleMode.allCases.filter(\.supportsHYPIRSettings) == [.maximumExperimental])
         #expect(SeedVR2Preset.faithful.settings == .init(inputNoiseScale: 0, latentNoiseScale: 0, colorCorrection: .lab))
         #expect(SeedVR2Preset.highResolutionCleanup.settings == .init(inputNoiseScale: 0.15, latentNoiseScale: 0, colorCorrection: .lab))
         #expect(SeedVR2Preset.softerDetail.settings == .init(inputNoiseScale: 0, latentNoiseScale: 0.08, colorCorrection: .wavelet))
         #expect(SeedVR2Options(preset: .custom, customInputNoiseScale: -1, customLatentNoiseScale: 2).resolvedSettings == .init(inputNoiseScale: 0, latentNoiseScale: 1, colorCorrection: .lab))
+        #expect(HYPIRPreset.natural.settings == .init(
+            patchSize: 1024,
+            patchStride: 768,
+            prompt: "a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness"
+        ))
+        #expect(HYPIRPreset.balanced.settings == .init(
+            patchSize: 768,
+            patchStride: 512,
+            prompt: HYPIRSettings.balancedPrompt
+        ))
+        #expect(HYPIRPreset.enhanced.settings == .init(
+            patchSize: 512,
+            patchStride: 256,
+            prompt: "a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing"
+        ))
+        #expect(HYPIROptions(
+            preset: .custom,
+            customPatchSize: 600,
+            customPatchStride: 900,
+            customPrompt: "  "
+        ).resolvedSettings == .init(
+            patchSize: 640,
+            patchStride: 640,
+            prompt: HYPIRSettings.balancedPrompt
+        ))
     }
 
     @Test("CodeFormer presets clamp custom fidelity and preprocessing order is stable")
@@ -103,6 +129,43 @@ struct ModelCatalogTests {
         #expect(arguments.contains("--face-restore"))
         #expect(containsPair("--codeformer-preset", "faithful"))
         #expect(containsPair("--codeformer-fidelity", "0.9"))
+    }
+
+    @Test("App options forward HYPIR preset and custom settings to the CLI")
+    func cliHYPIRArguments() {
+        let input = URL(fileURLWithPath: "/tmp/input.png")
+        let output = URL(fileURLWithPath: "/tmp/output.png")
+        var options = UpscaleOptions(
+            mode: .maximumExperimental,
+            generativeOptions: .init(variationSeed: 456),
+            hypirOptions: .init(preset: .natural),
+            sizingKind: .scale,
+            scale: 2,
+            resolution: 2048,
+            maxResolution: 4096,
+            format: .png,
+            quality: 90
+        )
+
+        var arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        func containsPair(_ flag: String, _ value: String) -> Bool {
+            zip(arguments, arguments.dropFirst()).contains { $0 == flag && $1 == value }
+        }
+        #expect(containsPair("--seed", "456"))
+        #expect(containsPair("--hypir-preset", "natural"))
+        #expect(!arguments.contains("--hypir-patch-size"))
+
+        options.hypirOptions = .init(
+            preset: .custom,
+            customPatchSize: 896,
+            customPatchStride: 640,
+            customPrompt: "natural portrait photograph"
+        )
+        arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        #expect(containsPair("--hypir-preset", "custom"))
+        #expect(containsPair("--hypir-patch-size", "896"))
+        #expect(containsPair("--hypir-patch-stride", "640"))
+        #expect(containsPair("--hypir-prompt", "natural portrait photograph"))
     }
 
     @Test("Models below the machine RAM threshold are rejected")
@@ -163,6 +226,10 @@ struct ModelCatalogTests {
         firstStore.mode = .maximum
         firstStore.deblurMode = .motion
         firstStore.faceRestoreEnabled = true
+        firstStore.hypirPreset = .enhanced
+        firstStore.hypirPatchSize = 1_024
+        firstStore.hypirPatchStride = 768
+        firstStore.hypirPrompt = "custom prompt"
         firstStore.sizingKind = .resolution
         firstStore.scale = 4
         firstStore.resolution = 1_024
@@ -175,6 +242,10 @@ struct ModelCatalogTests {
         #expect(restartedStore.mode == .normal)
         #expect(restartedStore.deblurMode == .none)
         #expect(!restartedStore.faceRestoreEnabled)
+        #expect(restartedStore.hypirPreset == .balanced)
+        #expect(restartedStore.hypirPatchSize == 768)
+        #expect(restartedStore.hypirPatchStride == 512)
+        #expect(restartedStore.hypirPrompt == HYPIRSettings.balancedPrompt)
         #expect(restartedStore.sizingKind == .scale)
         #expect(restartedStore.scale == 2)
         #expect(restartedStore.resolution == 2_048)

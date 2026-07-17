@@ -111,6 +111,7 @@ struct UpscaleOptions {
     var codeFormerOptions: CodeFormerOptions = .init()
     var generativeOptions: GenerativeOptions = .init()
     var seedVR2Options: SeedVR2Options = .init()
+    var hypirOptions: HYPIROptions = .init()
     var sizingKind: SizingKind
     var scale: Double
     var resolution: Int

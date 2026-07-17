@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="22"
+RUNTIME_VERSION="24"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -1293,6 +1293,15 @@ base = base.replace(
 )
 if 'subfolder="vae", variant="fp16"' not in base:
     raise RuntimeError("The pinned HYPIR FP16 VAE loader patch did not apply cleanly")
+
+# HYPIR's VAE produces invalid black output with FP16 on MPS. Preserve its
+# bfloat16 inference dtype even though the compact model files are stored as
+# FP16 safetensors; loading them into BF16 is required for correct output.
+mps_fp16_dtype = 'self.weight_dtype = torch.float16 if str(device).startswith("mps") else torch.bfloat16'
+base = base.replace(mps_fp16_dtype, "self.weight_dtype = torch.bfloat16")
+if "self.weight_dtype = torch.bfloat16" not in base:
+    raise RuntimeError("The pinned HYPIR BF16 compatibility patch did not apply cleanly")
+
 if "[progress] 45% Encoding image" not in base:
     base = base.replace(
         "        # VAE encoding\n",
@@ -1312,6 +1321,43 @@ if not all(marker in base for marker in (
     "[progress] 80% Decoding image",
 )):
     raise RuntimeError("The pinned HYPIR progress patch did not apply cleanly")
+
+# Synchronize only at stage boundaries so the log reports real Metal execution
+# time without adding per-tile synchronization to the hot path.
+if "def report_stage_time" not in base:
+    base = base.replace(
+        "from typing import Literal, List, overload\n",
+        "from time import perf_counter\nfrom typing import Literal, List, overload\n",
+    )
+    base = base.replace(
+        '        print("[progress] 45% Encoding image", flush=True)\n',
+        '        print("[progress] 45% Encoding image", flush=True)\n        stage_start = perf_counter()\n',
+    )
+    base = base.replace(
+        "        )(lq.to(self.weight_dtype))\n\n        print(\"[progress] 60% Restoring details\", flush=True)\n",
+        "        )(lq.to(self.weight_dtype))\n        self.report_stage_time(\"VAE encoding\", stage_start)\n\n        print(\"[progress] 60% Restoring details\", flush=True)\n        stage_start = perf_counter()\n",
+    )
+    base = base.replace(
+        "        )(z_lq.to(self.weight_dtype))\n        \n        print(\"[progress] 80% Decoding image\", flush=True)\n",
+        "        )(z_lq.to(self.weight_dtype))\n        self.report_stage_time(\"generator\", stage_start)\n        \n        print(\"[progress] 80% Decoding image\", flush=True)\n        stage_start = perf_counter()\n",
+    )
+    base = base.replace(
+        "        )(z.to(self.weight_dtype))\n        \n        x = x[..., :h1, :w1]\n",
+        "        )(z.to(self.weight_dtype))\n        self.report_stage_time(\"VAE decoding\", stage_start)\n        \n        x = x[..., :h1, :w1]\n",
+    )
+    base = base.replace(
+        "    @staticmethod\n    def tensor2image(img_tensor):\n",
+        '''    def report_stage_time(self, label: str, started: float) -> None:
+        if str(self.device).startswith("mps"):
+            torch.mps.synchronize()
+        print(f"      HYPIR {label}: {perf_counter() - started:.2f}s", flush=True)
+
+    @staticmethod
+    def tensor2image(img_tensor):
+''',
+    )
+if "def report_stage_time" not in base or base.count("self.report_stage_time(") != 3:
+    raise RuntimeError("The pinned HYPIR stage timing patch did not apply cleanly")
 base_path.write_text(base)
 
 test_path = destination / "test.py"
@@ -1425,6 +1471,11 @@ Options:
   --input-noise-scale N        SeedVR2 input noise from 0 to 1
   --latent-noise-scale N       SeedVR2 latent noise from 0 to 1
   --color-correction METHOD    lab, wavelet, wavelet_adaptive, hsv, adain, or none
+  --hypir-preset PRESET        natural, balanced, enhanced, or custom
+                               HYPIR only. Default: balanced
+  --hypir-patch-size N         Custom HYPIR patch size: 512 through 1024 by 128
+  --hypir-patch-stride N       Custom HYPIR stride: 256 through patch size by 128
+  --hypir-prompt TEXT          Custom HYPIR photographic-result prompt
   --progress-interval N        Seconds between elapsed-time updates. Default: 10
   --no-progress                Disable wrapper progress messages
   --help                       Show this help
@@ -1471,9 +1522,17 @@ SEEDVR2_SETTINGS_REQUESTED="0"
 INPUT_NOISE_SCALE=""
 LATENT_NOISE_SCALE=""
 COLOR_CORRECTION=""
+HYPIR_PRESET="balanced"
+HYPIR_SETTINGS_REQUESTED="0"
+HYPIR_CUSTOM_SETTINGS_REQUESTED="0"
+HYPIR_PATCH_SIZE=""
+HYPIR_PATCH_STRIDE=""
+HYPIR_PROMPT=""
+HYPIR_EXPLICIT_CONFIG="0"
 SHOW_PROGRESS="1"
 PROGRESS_INTERVAL="10"
 TILE_MODE="auto"
+TILE_REQUESTED="0"
 DENOISE_STRENGTH="0.5"
 QUALITY="90"
 DEBLUR="none"
@@ -1545,6 +1604,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --tile)
       TILE_MODE="${2:?Missing value for --tile}"
+      TILE_REQUESTED="1"
       shift 2
       ;;
     --denoise-strength)
@@ -1578,6 +1638,29 @@ while [[ $# -gt 0 ]]; do
     --color-correction)
       COLOR_CORRECTION="${2:?Missing value for --color-correction}"
       SEEDVR2_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --hypir-preset)
+      HYPIR_PRESET="${2:?Missing value for --hypir-preset}"
+      HYPIR_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --hypir-patch-size)
+      HYPIR_PATCH_SIZE="${2:?Missing value for --hypir-patch-size}"
+      HYPIR_SETTINGS_REQUESTED="1"
+      HYPIR_CUSTOM_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --hypir-patch-stride)
+      HYPIR_PATCH_STRIDE="${2:?Missing value for --hypir-patch-stride}"
+      HYPIR_SETTINGS_REQUESTED="1"
+      HYPIR_CUSTOM_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --hypir-prompt)
+      HYPIR_PROMPT="${2:?Missing value for --hypir-prompt}"
+      HYPIR_SETTINGS_REQUESTED="1"
+      HYPIR_CUSTOM_SETTINGS_REQUESTED="1"
       shift 2
       ;;
     --progress-interval)
@@ -1690,6 +1773,69 @@ fi
 if [[ "$SEEDVR2_SETTINGS_REQUESTED" == "1" && "$MODE" != "advanced" && "$MODE" != "maximum" ]]; then
   echo "SeedVR2 restoration settings require --mode advanced or --mode maximum" >&2
   exit 2
+fi
+
+if [[ "$HYPIR_SETTINGS_REQUESTED" == "1" && "$MODE" != "maximum-experimental" ]]; then
+  echo "HYPIR restoration settings require --mode maximum-experimental" >&2
+  exit 2
+fi
+
+if [[ "$HYPIR_CUSTOM_SETTINGS_REQUESTED" == "1" && "$HYPIR_PRESET" != "custom" ]]; then
+  echo "Custom HYPIR patch, stride, and prompt settings require --hypir-preset custom" >&2
+  exit 2
+fi
+
+if [[ "$MODE" == "maximum-experimental" && ( "$HYPIR_SETTINGS_REQUESTED" == "1" || "$TILE_REQUESTED" == "0" ) ]]; then
+  HYPIR_EXPLICIT_CONFIG="1"
+  case "$HYPIR_PRESET" in
+    natural)
+      HYPIR_PATCH_SIZE="1024"
+      HYPIR_PATCH_STRIDE="768"
+      HYPIR_PROMPT="a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness"
+      ;;
+    balanced)
+      HYPIR_PATCH_SIZE="768"
+      HYPIR_PATCH_STRIDE="512"
+      HYPIR_PROMPT="a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness"
+      ;;
+    enhanced)
+      HYPIR_PATCH_SIZE="512"
+      HYPIR_PATCH_STRIDE="256"
+      HYPIR_PROMPT="a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing"
+      ;;
+    custom)
+      : "${HYPIR_PATCH_SIZE:=768}"
+      : "${HYPIR_PATCH_STRIDE:=512}"
+      : "${HYPIR_PROMPT:=a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness}"
+      ;;
+    *)
+      echo "--hypir-preset must be natural, balanced, enhanced, or custom" >&2
+      exit 2
+      ;;
+  esac
+
+  if ! "$PYTHON" - "$HYPIR_PATCH_SIZE" "$HYPIR_PATCH_STRIDE" "$HYPIR_PROMPT" <<'PY'
+import sys
+
+try:
+    patch_size = int(sys.argv[1])
+    patch_stride = int(sys.argv[2])
+except ValueError:
+    raise SystemExit(1)
+
+valid = (
+    512 <= patch_size <= 1024
+    and (patch_size - 512) % 128 == 0
+    and 256 <= patch_stride <= patch_size
+    and (patch_stride - 256) % 128 == 0
+    and bool(sys.argv[3].strip())
+)
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    echo "HYPIR patch size must be 512...1024 by 128, stride must be 256...patch size by 128, and prompt must not be empty" >&2
+    exit 2
+  fi
 fi
 
 if [[ "$SEED_REQUESTED" == "1" && "$MODE" != "advanced" && "$MODE" != "maximum" && "$MODE" != "maximum-experimental" ]]; then
@@ -1987,6 +2133,51 @@ with Image.open(sys.argv[1]) as image:
     image.convert("RGB").save(sys.argv[2])
 PY
 
+  # HYPIR can restore directly at a requested longest edge. Do not render its
+  # upstream example's unconditional 4x intermediate and then throw pixels
+  # away during finalization. This is especially important for Vivid's default
+  # 2x output, where the old path processed four times the requested area.
+  read -r HYPIR_TARGET_WIDTH HYPIR_TARGET_HEIGHT <<< "$(
+    "$PYTHON" - "$PROCESSING_INPUT" "$RESOLUTION" "$MAX_RESOLUTION" <<'PY'
+from PIL import Image
+import sys
+
+with Image.open(sys.argv[1]) as image:
+    width, height = image.size
+
+short_edge = int(sys.argv[2])
+max_long_edge = int(sys.argv[3])
+current_short = min(width, height)
+current_long = max(width, height)
+scale = short_edge / current_short
+if current_long * scale > max_long_edge:
+    scale = max_long_edge / current_long
+print(max(1, round(width * scale)), max(1, round(height * scale)))
+PY
+  )"
+  HYPIR_TARGET_LONG_EDGE=$((HYPIR_TARGET_WIDTH > HYPIR_TARGET_HEIGHT ? HYPIR_TARGET_WIDTH : HYPIR_TARGET_HEIGHT))
+
+  # Explicit HYPIR presets own prompt and tiling. Preserve the earlier generic
+  # --tile mapping only when callers explicitly provide --tile without HYPIR
+  # configuration, so older integrations remain compatible.
+  if [[ "$HYPIR_EXPLICIT_CONFIG" == "1" ]]; then
+    HYPIR_STRIDE="$HYPIR_PATCH_STRIDE"
+  else
+    HYPIR_PATCH_SIZE=512
+    case "$TILE_MODE" in
+      on) HYPIR_STRIDE=256 ;;
+      auto) HYPIR_STRIDE=384 ;;
+      off) HYPIR_STRIDE=512 ;;
+    esac
+    HYPIR_PROMPT="a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness"
+  fi
+  if [[ "$SHOW_PROGRESS" == "1" ]]; then
+    echo "      HYPIR target: ${HYPIR_TARGET_WIDTH}x${HYPIR_TARGET_HEIGHT}"
+    echo "      HYPIR preset: $HYPIR_PRESET"
+    echo "      HYPIR tiles: ${HYPIR_PATCH_SIZE}px, ${HYPIR_STRIDE}px stride"
+    echo "      HYPIR precision: BF16 on MPS"
+  fi
+
   set +e
   (
     cd "$INSTALL_ROOT/HYPIR-source"
@@ -1998,12 +2189,13 @@ PY
       --lora_rank 256 \
       --lora_modules to_k,to_q,to_v,to_out.0,conv,conv1,conv2,conv_shortcut,conv_out,proj_in,proj_out,ff.net.2,ff.net.0.proj \
       --weight_path "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth" \
-      --patch_size 512 \
-      --stride 256 \
+      --patch_size "$HYPIR_PATCH_SIZE" \
+      --stride "$HYPIR_STRIDE" \
       --lq_dir "$HYPIR_WORK/input" \
-      --scale_by factor \
-      --upscale 4 \
-      --captioner empty \
+      --scale_by longest_side \
+      --target_longest_side "$HYPIR_TARGET_LONG_EDGE" \
+      --captioner fixed \
+      --fixed_caption "$HYPIR_PROMPT" \
       --output_dir "$HYPIR_WORK/output" \
       --seed "$SEED" \
       --device mps

@@ -110,6 +110,15 @@ actor VividCLI {
             arguments += ["--latent-noise-scale", String(settings.latentNoiseScale)]
             arguments += ["--color-correction", settings.colorCorrection.rawValue]
         }
+        if options.mode.supportsHYPIRSettings {
+            arguments += ["--hypir-preset", options.hypirOptions.preset.rawValue]
+            if options.hypirOptions.preset == .custom {
+                let settings = options.hypirOptions.resolvedSettings
+                arguments += ["--hypir-patch-size", String(settings.patchSize)]
+                arguments += ["--hypir-patch-stride", String(settings.patchStride)]
+                arguments += ["--hypir-prompt", settings.prompt]
+            }
+        }
         switch options.sizingKind {
         case .scale:
             arguments += ["--scale", String(options.scale)]
@@ -177,7 +186,7 @@ actor VividCLI {
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_codeformer.py").path)
-            && version == "22"
+            && version == "24"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {
