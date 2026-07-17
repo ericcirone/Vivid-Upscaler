@@ -37,7 +37,9 @@ final class UpscaleStore {
     var noticeMessage: String?
     var completedOutputURL: URL?
     var showOnboarding = false
-    var installedModelIDs: Set<String> = []
+    var installedModelIDs: Set<String> = [] {
+        didSet { normalizeModelSelections() }
+    }
     var pendingOverwriteURL: URL?
 
     private let cli = VividCLI()
@@ -110,6 +112,29 @@ final class UpscaleStore {
 
     func isInstalled(_ model: ModelInfo) -> Bool {
         installedModelIDs.contains(model.id)
+    }
+
+    var installedUpscaleModes: [UpscaleMode] {
+        UpscaleMode.allCases.filter { installedModelIDs.contains($0.rawValue) }
+    }
+
+    var installedDeblurModes: [DeblurMode] {
+        [.none] + DeblurMode.allCases.filter {
+            $0 != .none && installedModelIDs.contains($0.rawValue)
+        }
+    }
+
+    private func normalizeModelSelections() {
+        if !installedModelIDs.contains(mode.rawValue),
+           let fallback = installedUpscaleModes.first(where: { $0.minimumRAMGB <= systemRAMGB })
+                ?? installedUpscaleModes.first {
+            mode = fallback
+        }
+
+        if let deblurModelID = deblurMode.modelID,
+           !installedModelIDs.contains(deblurModelID) {
+            deblurMode = .none
+        }
     }
 
     var outputURL: URL? {

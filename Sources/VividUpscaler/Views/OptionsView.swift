@@ -5,28 +5,9 @@ struct OptionsView: View {
 
     var body: some View {
         Form {
-            Section("Mode") {
-                Picker("Mode", selection: $store.mode) {
-                    ForEach(UpscaleMode.allCases) { mode in
-                        Text(mode.isExperimental ? "\(mode.title) (Experimental)" : mode.title)
-                            .tag(mode)
-                            .disabled(mode.minimumRAMGB > store.systemRAMGB)
-                    }
-                }
-                Text(store.mode.detail).font(.caption).foregroundStyle(.secondary)
-                if store.mode.isExperimental {
-                    Text("Opt-in generative restoration. Results may invent plausible detail; avoid for identity, text, or documentary-critical work.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-                Text("Requires \(store.mode.minimumRAMGB) GB RAM · This Mac: \(store.systemRAMGB) GB")
-                    .font(.caption2)
-                    .foregroundStyle(store.mode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)
-            }
-
             Section("Deblur") {
                 Picker("Preprocessing", selection: $store.deblurMode) {
-                    ForEach(DeblurMode.allCases) { deblurMode in
+                    ForEach(store.installedDeblurModes) { deblurMode in
                         Text(deblurMode.title)
                             .tag(deblurMode)
                             .disabled(deblurMode.minimumRAMGB > store.systemRAMGB)
@@ -46,6 +27,25 @@ struct OptionsView: View {
                 }
             }
 
+            Section("Mode") {
+                Picker("Mode", selection: $store.mode) {
+                    ForEach(store.installedUpscaleModes) { mode in
+                        Text(mode.isExperimental ? "\(mode.title) (Experimental)" : mode.title)
+                            .tag(mode)
+                            .disabled(mode.minimumRAMGB > store.systemRAMGB)
+                    }
+                }
+                Text(store.mode.detail).font(.caption).foregroundStyle(.secondary)
+                if store.mode.isExperimental {
+                    Text("Opt-in generative restoration. Results may invent plausible detail; avoid for identity, text, or documentary-critical work.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                Text("Requires \(store.mode.minimumRAMGB) GB RAM · This Mac: \(store.systemRAMGB) GB")
+                    .font(.caption2)
+                    .foregroundStyle(store.mode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)
+            }
+
             Section("Size") {
                 Picker("Sizing", selection: $store.sizingKind) {
                     ForEach(SizingKind.allCases) { kind in Text(kind.title).tag(kind) }
@@ -54,6 +54,8 @@ struct OptionsView: View {
 
                 if store.sizingKind == .scale {
                     Picker("Scale", selection: $store.scale) {
+                        Text("1×").tag(1.0)
+                        Text("1.5×").tag(1.5)
                         Text("2×").tag(2.0)
                         Text("3×").tag(3.0)
                         Text("4×").tag(4.0)

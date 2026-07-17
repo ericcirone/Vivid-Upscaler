@@ -71,4 +71,28 @@ struct ModelCatalogTests {
         store.installedModelIDs.insert("fast")
         #expect(store.hasInstalledUpscaleModel)
     }
+
+    @Test("Selectors only expose downloaded models")
+    @MainActor
+    func selectorsOnlyExposeInstalledModels() {
+        let store = UpscaleStore(systemMemoryBytes: 32 * 1_073_741_824)
+        store.installedModelIDs = ["fast", "maximum", "deblur-motion"]
+
+        #expect(store.installedUpscaleModes == [.fast, .maximum])
+        #expect(store.installedDeblurModes == [.none, .motion])
+    }
+
+    @Test("Removed selections fall back to downloaded choices")
+    @MainActor
+    func removedSelectionsFallBackToDownloadedChoices() {
+        let store = UpscaleStore(systemMemoryBytes: 32 * 1_073_741_824)
+        store.installedModelIDs = ["fast", "normal", "deblur-motion"]
+        store.mode = .normal
+        store.deblurMode = .motion
+
+        store.installedModelIDs = ["fast"]
+
+        #expect(store.mode == .fast)
+        #expect(store.deblurMode == .none)
+    }
 }
