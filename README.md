@@ -91,7 +91,7 @@ Run `vvd --help` for the complete option list. The main options are:
 
 | Option | Description |
 | --- | --- |
-| `--mode MODE` | `fast`, `normal`, `normal-hq`, `advanced`, or `maximum`; default is `normal` |
+| `--mode MODE` | `fast`, `normal`, `normal-hq`, `advanced`, `maximum`, or `maximum-experimental`; default is `normal` |
 | `--deblur MODE` | Optional `deblur-motion` or `deblur-defocus` Restormer pass before upscaling; default is `none` |
 | `--scale N` | Multiply both source dimensions by `N` |
 | `--resolution N` | Target the short edge in pixels; default is 2048 |
@@ -113,10 +113,13 @@ A bare output filename is saved beside the input file. Include a slash, such as 
 | `normal-hq` | `4xNomosWebPhoto_esrgan` | PyTorch MPS via Spandrel | 16 GB | 16 GB | 24 GB | Photographic restoration for compression, blur, noise, and Web/JPEG sources |
 | `advanced` | SeedVR2 3B 8-bit | Native MLX | 16 GB | 24 GB | 32 GB | Difficult restoration jobs where a longer wait is acceptable |
 | `maximum` | SeedVR2 3B source precision | Native MLX | 24 GB | 32 GB | 48 GB | Highest-quality and slowest processing |
+| `maximum-experimental` | HYPIR-SD2 | PyTorch MPS, experimental | 24 GB | 32 GB | 48 GB | Maximum-tier opt-in generative restoration with strong detail reconstruction and adjustable texture richness |
 | `deblur-motion` | Restormer Motion Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Camera shake, subject movement, and directional motion blur |
 | `deblur-defocus` | Restormer Single-Image Defocus Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Out-of-focus and lens-related blur |
 
 SeedVR2 is intentionally limited to the 3B model. Advanced quantizes it to 8-bit at load time; Maximum keeps the source precision.
+
+Maximum Experimental is an opt-in HYPIR-SD2 path. It may reconstruct plausible detail that was not present in the source, so avoid it for facial identity, text, or documentary-critical work. The official HYPIR implementation documents CUDA rather than Apple Silicon MPS; Vivid's MPS integration remains experimental. HYPIR's official repository also restricts commercial use without separate permission, even though its model repository displays an Apache 2.0 label; review and follow the more restrictive terms before enabling it in a commercial product.
 
 The two Restormer entries are optional preprocessors, not upscale modes. Choose Motion Blur or Out of Focus in the app; Vivid does not guess when the blur type is uncertain. Deblurring preserves the source dimensions and runs before the selected upscale mode.
 
@@ -144,6 +147,7 @@ portrait-vivid-upscale-advanced-2048px.webp
 ~/.local/bin/vvd
 ~/.local/share/vivid/venv
 ~/.local/share/vivid/models/SEEDVR2
+~/.local/share/vivid/models/HYPIR
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-general-x4v3
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus
 ~/.local/share/vivid/models/nomos-webphoto-esrgan

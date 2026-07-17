@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="13"
+RUNTIME_VERSION="18"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -39,7 +39,9 @@ uv pip install --python "$VENV_DIR/bin/python" torch torchvision
 uv pip install --python "$VENV_DIR/bin/python" \
   "mflux==0.18.0" \
   "realesrgan-mlx @ git+https://github.com/xocialize/realesrgan-mlx.git@52c0fc1044277900b995308095a1f3cc484a3581" \
-  pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" "spandrel-extra-arches==0.2.0" safetensors huggingface-hub
+  pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" "spandrel-extra-arches==0.2.0" safetensors huggingface-hub \
+  accelerate diffusers peft omegaconf einops opencv-python-headless timm open-clip-torch \
+  "openai==1.96.1" "tenacity==9.1.2"
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 #!/usr/bin/env python3
@@ -659,6 +661,13 @@ model_is_installed() {
     normal-hq)
       [[ -f "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors" ]]
       ;;
+    maximum-experimental)
+      [[ -f "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth" \
+        && -f "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base/unet/diffusion_pytorch_model.fp16.safetensors" \
+        && -f "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base/vae/diffusion_pytorch_model.fp16.safetensors" \
+        && -f "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base/text_encoder/model.fp16.safetensors" \
+        && -f "$INSTALL_ROOT/HYPIR-source/test.py" ]]
+      ;;
     deblur-motion)
       [[ -f "$MODEL_ROOT/restormer/motion/motion_deblurring.pth" ]]
       ;;
@@ -722,7 +731,7 @@ minimum_ram_for_model() {
   case "$1" in
     fast) echo 8 ;;
     normal|normal-hq|advanced|deblur-motion|deblur-defocus) echo 16 ;;
-    maximum) echo 24 ;;
+    maximum|maximum-experimental) echo 24 ;;
     *) echo 0 ;;
   esac
 }
@@ -731,17 +740,18 @@ if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
         model_is_installed normal-hq && NORMAL_HQ=true
         model_is_installed advanced && ADVANCED=true
         model_is_installed maximum && MAXIMUM=true
+        model_is_installed maximum-experimental && MAXIMUM_EXPERIMENTAL=true
         model_is_installed deblur-motion && DEBLUR_MOTION=true
         model_is_installed deblur-defocus && DEBLUR_DEFOCUS=true
-        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s,"deblur-motion":%s,"deblur-defocus":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS"
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"deblur-motion":%s,"deblur-defocus":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS"
       else
-        for MODEL_ID in fast normal normal-hq advanced maximum deblur-motion deblur-defocus; do
+        for MODEL_ID in fast normal normal-hq advanced maximum maximum-experimental deblur-motion deblur-defocus; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -806,8 +816,126 @@ if [[ "${1:-}" == "models" ]]; then
             "https://huggingface.co/numz/SeedVR2_comfyUI/resolve/main/ema_vae_fp16.safetensors" \
             "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors"
           ;;
+        maximum-experimental)
+          echo "HYPIR is experimental, may reconstruct details not present in the source, and its official project restricts commercial use without separate permission."
+          download_model_file \
+            "https://huggingface.co/lxq007/HYPIR/resolve/main/HYPIR_sd2.pth" \
+            "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth"
+          # Stability AI removed the public repository named by HYPIR's
+          # upstream example. Install the same SD 2.1 base components from a
+          # pinned public mirror so inference never depends on that dead ID.
+          "$PYTHON" -u - "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base" <<'PY'
+from huggingface_hub import snapshot_download
+from pathlib import Path
+import sys
+
+destination = Path(sys.argv[1])
+destination.mkdir(parents=True, exist_ok=True)
+snapshot_download(
+    repo_id="sd2-community/stable-diffusion-2-1-base",
+    revision="4e63672c03103b6c636b8fb4119ba982469b2955",
+    local_dir=destination,
+    allow_patterns=[
+        "scheduler/scheduler_config.json",
+        "tokenizer/merges.txt",
+        "tokenizer/special_tokens_map.json",
+        "tokenizer/tokenizer_config.json",
+        "tokenizer/vocab.json",
+        "text_encoder/config.json",
+        "text_encoder/model.fp16.safetensors",
+        "unet/config.json",
+        "unet/diffusion_pytorch_model.fp16.safetensors",
+        "vae/config.json",
+        "vae/diffusion_pytorch_model.fp16.safetensors",
+    ],
+)
+PY
+          "$PYTHON" -u - "$INSTALL_ROOT/HYPIR-source" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+destination = Path(sys.argv[1])
+if not (destination / "test.py").exists():
+    url = "https://github.com/XPixelGroup/HYPIR/archive/b61d107.tar.gz"
+    with tempfile.TemporaryDirectory() as temporary:
+        archive = Path(temporary) / "hypir.tar.gz"
+        urllib.request.urlretrieve(url, archive)
+        with tarfile.open(archive, "r:gz") as package:
+            package.extractall(temporary, filter="data")
+        source = next(Path(temporary).glob("HYPIR-*"))
+        shutil.rmtree(destination, ignore_errors=True)
+        shutil.copytree(source, destination)
+
+# HYPIR's tiled-VAE helper was copied from Stable Diffusion WebUI and imports
+# modules.mac_specific, which is not part of the standalone HYPIR repository.
+# It also hard-codes CUDA for its module-level device and autocast helpers.
+# Patch the pinned source into a self-contained implementation that follows the
+# requested torch device and safely uses MPS without WebUI-only dependencies.
+devices_path = destination / "HYPIR/utils/tiled_vae/devices.py"
+devices = devices_path.read_text()
+devices = devices.replace(
+    "if sys.platform == \"darwin\":\n    from modules import mac_specific\n",
+    '''if sys.platform == "darwin":
+    class _MacSpecific:
+        has_mps = torch.backends.mps.is_available()
+
+        @staticmethod
+        def torch_mps_gc():
+            if _MacSpecific.has_mps:
+                torch.mps.empty_cache()
+
+    mac_specific = _MacSpecific()
+''',
+)
+devices = devices.replace(
+    'device = device_interrogate = device_gfpgan = device_esrgan = device_codeformer = torch.device("cuda")',
+    'device = device_interrogate = device_gfpgan = device_esrgan = device_codeformer = get_optimal_device()',
+)
+devices = devices.replace(
+    '    return torch.autocast("cuda")',
+    '    return torch.autocast("cuda") if device.type == "cuda" else contextlib.nullcontext()',
+)
+devices = devices.replace(
+    '    return torch.autocast("cuda", enabled=False) if torch.is_autocast_enabled() and not disable else contextlib.nullcontext()',
+    '    return torch.autocast("cuda", enabled=False) if device.type == "cuda" and torch.is_autocast_enabled() and not disable else contextlib.nullcontext()',
+)
+if "from modules import mac_specific" in devices or 'torch.device("cuda")' in devices:
+    raise RuntimeError("The pinned HYPIR MPS compatibility patch did not apply cleanly")
+devices_path.write_text(devices)
+
+# Load the mirror's compact FP16 safetensors instead of downloading duplicate
+# full-precision weights that HYPIR immediately casts to bfloat16.
+sd2_path = destination / "HYPIR/enhancer/sd2.py"
+sd2 = sd2_path.read_text()
+sd2 = sd2.replace(
+    'subfolder="text_encoder", torch_dtype=self.weight_dtype',
+    'subfolder="text_encoder", variant="fp16", torch_dtype=self.weight_dtype',
+)
+sd2 = sd2.replace(
+    'subfolder="unet", torch_dtype=self.weight_dtype',
+    'subfolder="unet", variant="fp16", torch_dtype=self.weight_dtype',
+)
+if sd2.count('variant="fp16"') < 2:
+    raise RuntimeError("The pinned HYPIR FP16 loader patch did not apply cleanly")
+sd2_path.write_text(sd2)
+
+base_path = destination / "HYPIR/enhancer/base.py"
+base = base_path.read_text()
+base = base.replace(
+    'subfolder="vae", torch_dtype=self.weight_dtype',
+    'subfolder="vae", variant="fp16", torch_dtype=self.weight_dtype',
+)
+if 'subfolder="vae", variant="fp16"' not in base:
+    raise RuntimeError("The pinned HYPIR FP16 VAE loader patch did not apply cleanly")
+base_path.write_text(base)
+PY
+          ;;
         *)
-          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum|deblur-motion|deblur-defocus" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus" >&2
           exit 2
           ;;
       esac
@@ -820,10 +948,11 @@ if [[ "${1:-}" == "models" ]]; then
         fast) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3" ;;
         normal) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus" ;;
         normal-hq) rm -rf "$MODEL_ROOT/nomos-webphoto-esrgan" ;;
+        maximum-experimental) rm -rf "$MODEL_ROOT/HYPIR" "$INSTALL_ROOT/HYPIR-source" ;;
         deblur-motion) rm -rf "$MODEL_ROOT/restormer/motion" ;;
         deblur-defocus) rm -rf "$MODEL_ROOT/restormer/defocus" ;;
         advanced|maximum) rm -rf "$MODEL_ROOT/SEEDVR2" ;;
-        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum|deblur-motion|deblur-defocus" >&2; exit 2 ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus" >&2; exit 2 ;;
       esac
       echo "Deleted model: $MODEL_ID"
       exit 0
@@ -855,16 +984,19 @@ Modes:
   normal-hq Photographic restoration with 4xNomosWebPhoto_esrgan via Spandrel MPS.
   advanced  Native MLX SeedVR2 3B restoration with 8-bit quantization.
   maximum   Native MLX SeedVR2 3B restoration at source precision.
+  maximum-experimental
+            Maximum-tier experimental HYPIR-SD2 generative restoration via PyTorch MPS.
 
 Optional preprocessing:
   deblur-motion   Restormer correction for camera shake, movement, and directional blur.
   deblur-defocus  Restormer correction for out-of-focus and lens blur.
 
 Options:
-  --mode MODE                  fast, normal, normal-hq, advanced, or maximum
+  --mode MODE                  fast, normal, normal-hq, advanced, maximum, or maximum-experimental
   --fast                       Alias for --mode fast
   --normal                     Alias for --mode normal
   --advanced                   Alias for --mode advanced
+  --maximum-experimental       Alias for --mode maximum-experimental
   --deblur none|deblur-motion|deblur-defocus
                                Optional Restormer pass before upscaling. Default: none
   --scale N                    Multiply the source width and height by N. Files only.
@@ -947,6 +1079,10 @@ while [[ $# -gt 0 ]]; do
       MODE="maximum"
       shift
       ;;
+    --maximum-experimental)
+      MODE="maximum-experimental"
+      shift
+      ;;
     --deblur)
       DEBLUR="${2:?Missing value for --deblur}"
       shift 2
@@ -1002,9 +1138,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  fast|normal|normal-hq|advanced|maximum) ;;
+  fast|normal|normal-hq|advanced|maximum|maximum-experimental) ;;
   *)
-    echo "--mode must be fast, normal, normal-hq, advanced, or maximum" >&2
+    echo "--mode must be fast, normal, normal-hq, advanced, maximum, or maximum-experimental" >&2
     exit 2
     ;;
 esac
@@ -1033,6 +1169,10 @@ if [[ "$DEBLUR" != "none" ]]; then
     echo "$DEBLUR is not installed. Run: vvd models install $DEBLUR" >&2
     exit 1
   fi
+fi
+if ! model_is_installed "$MODE"; then
+  echo "$MODE is not installed. Run: vvd models install $MODE" >&2
+  exit 1
 fi
 if [[ "$MODE" == "fast" && "$TILE_MODE" == "auto" && "$AVAILABLE_RAM" -gt 0 && "$AVAILABLE_RAM" -le 8 ]]; then
   TILE_MODE="on"
@@ -1177,6 +1317,11 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
       ;;
+    maximum-experimental)
+      echo "      Model:  HYPIR-SD2 via PyTorch MPS (experimental)"
+      echo "      Model files: $MODEL_ROOT/HYPIR"
+      echo "      Warning: generative restoration may reconstruct plausible details"
+      ;;
     maximum)
       echo "      Model:  SeedVR2 3B source precision via native MLX"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
@@ -1243,6 +1388,56 @@ if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; the
     --metadata-source "$INPUT"
   STATUS=$?
   set -e
+elif [[ "$MODE" == "maximum-experimental" ]]; then
+  HYPIR_WORK="$(mktemp -d "${TMPDIR:-/tmp}/vivid-hypir.XXXXXX")"
+  mkdir -p "$HYPIR_WORK/input" "$HYPIR_WORK/output"
+  "$PYTHON" - "$PROCESSING_INPUT" "$HYPIR_WORK/input/source.png" <<'PY'
+from PIL import Image
+import sys
+
+with Image.open(sys.argv[1]) as image:
+    image.convert("RGB").save(sys.argv[2])
+PY
+
+  set +e
+  (
+    cd "$INSTALL_ROOT/HYPIR-source"
+    "$PYTHON" -u test.py \
+      --base_model_type sd2 \
+      --base_model_path "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base" \
+      --model_t 200 \
+      --coeff_t 200 \
+      --lora_rank 256 \
+      --lora_modules to_k,to_q,to_v,to_out.0,conv,conv1,conv2,conv_shortcut,conv_out,proj_in,proj_out,ff.net.2,ff.net.0.proj \
+      --weight_path "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth" \
+      --patch_size 512 \
+      --stride 256 \
+      --lq_dir "$HYPIR_WORK/input" \
+      --scale_by factor \
+      --upscale 4 \
+      --captioner empty \
+      --output_dir "$HYPIR_WORK/output" \
+      --seed "$SEED" \
+      --device mps
+  )
+  STATUS=$?
+  set -e
+
+  if [[ "$STATUS" -eq 0 ]]; then
+    set +e
+    "$PYTHON" -u "$UPSCALE_HELPER" \
+      "$HYPIR_WORK/output/result/source.png" "$OUTPUT" \
+      --model-root "$MODEL_ROOT" \
+      --mode fast \
+      --short-edge "$RESOLUTION" \
+      --max-long-edge "$MAX_RESOLUTION" \
+      --quality "$QUALITY" \
+      --finalize-only \
+      --metadata-source "$INPUT"
+    STATUS=$?
+    set -e
+  fi
+  rm -rf "$HYPIR_WORK"
 else
   cd "$INSTALL_ROOT"
 
@@ -1331,6 +1526,14 @@ exit "$STATUS"
 WRAPPER
 
 chmod +x "$BIN_DIR/vvd"
+
+# Runtime upgrades must repair an already-downloaded HYPIR source tree too.
+# Otherwise the model remains marked installed while retaining upstream's
+# standalone-incompatible WebUI/CUDA helper from the previous runtime.
+if [[ -f "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth" && -f "$INSTALL_ROOT/HYPIR-source/test.py" ]]; then
+  "$BIN_DIR/vvd" models install maximum-experimental
+fi
+
 printf '%s\n' "$RUNTIME_VERSION" > "$INSTALL_ROOT/runtime-version"
 
 echo

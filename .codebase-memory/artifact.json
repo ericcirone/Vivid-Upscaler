@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "30004976dcdda0293f26387199ea0acbd8127b53",
-    "indexed_at": "2026-07-15T04:34:44Z",
-    "project": "Vivid-Upscaler",
-    "nodes": 316,
-    "edges": 668,
-    "original_size": 2031616,
-    "compressed_size": 142561,
+    "commit": "a0de882d71213730ca39c486e9d750b42c778149",
+    "indexed_at": "2026-07-17T02:58:08Z",
+    "project": "Volumes-Data-Users-eric-Documents-GitHub-Vivid-Upscaler",
+    "nodes": 356,
+    "edges": 773,
+    "original_size": 2228224,
+    "compressed_size": 156675,
     "compression_level": 3
 }

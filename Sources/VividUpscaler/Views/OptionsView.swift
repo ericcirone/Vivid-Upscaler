@@ -8,12 +8,17 @@ struct OptionsView: View {
             Section("Mode") {
                 Picker("Mode", selection: $store.mode) {
                     ForEach(UpscaleMode.allCases) { mode in
-                        Text(mode.title)
+                        Text(mode.isExperimental ? "\(mode.title) (Experimental)" : mode.title)
                             .tag(mode)
                             .disabled(mode.minimumRAMGB > store.systemRAMGB)
                     }
                 }
                 Text(store.mode.detail).font(.caption).foregroundStyle(.secondary)
+                if store.mode.isExperimental {
+                    Text("Opt-in generative restoration. Results may invent plausible detail; avoid for identity, text, or documentary-critical work.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text("Requires \(store.mode.minimumRAMGB) GB RAM · This Mac: \(store.systemRAMGB) GB")
                     .font(.caption2)
                     .foregroundStyle(store.mode.minimumRAMGB <= store.systemRAMGB ? Color.secondary : Color.red)

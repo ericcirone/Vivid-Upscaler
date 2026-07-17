@@ -73,8 +73,6 @@ struct ContentView: View {
             }
             Spacer()
             Button("Models") { store.showOnboarding = true }
-            SettingsLink { Image(systemName: "gearshape") }
-                .help("Settings")
         }
     }
 

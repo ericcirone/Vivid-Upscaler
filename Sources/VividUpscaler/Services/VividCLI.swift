@@ -155,7 +155,7 @@ actor VividCLI {
         let version = try? String(contentsOf: versionURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
-            && version == "13"
+            && version == "18"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

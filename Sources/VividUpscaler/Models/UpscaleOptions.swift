@@ -6,6 +6,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
     case normalHQ = "normal-hq"
     case advanced
     case maximum
+    case maximumExperimental = "maximum-experimental"
 
     var id: String { rawValue }
 
@@ -16,6 +17,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         case .normalHQ: "Normal HQ"
         case .advanced: "Advanced"
         case .maximum: "Maximum"
+        case .maximumExperimental: "Maximum Experimental"
         }
     }
 
@@ -26,6 +28,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         case .normalHQ: "Photographic restoration for compression, blur, and noise"
         case .advanced: "Native MLX SeedVR2 restoration with 8-bit weights"
         case .maximum: "Highest-quality SeedVR2 processing; slowest and most memory intensive"
+        case .maximumExperimental: "Experimental HYPIR generative restoration; may reconstruct plausible detail"
         }
     }
 
@@ -33,9 +36,11 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .fast: 8
         case .normal, .normalHQ, .advanced: 16
-        case .maximum: 24
+        case .maximum, .maximumExperimental: 24
         }
     }
+
+    var isExperimental: Bool { self == .maximumExperimental }
 }
 
 enum SizingKind: String, CaseIterable, Identifiable {

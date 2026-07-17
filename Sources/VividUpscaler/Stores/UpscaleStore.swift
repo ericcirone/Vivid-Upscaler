@@ -48,7 +48,12 @@ final class UpscaleStore {
     init(systemMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) {
         let defaults = UserDefaults.standard
         systemRAMGB = Int(systemMemoryBytes / 1_073_741_824)
-        let savedMode = UpscaleMode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .normal
+        let savedModeID = defaults.string(forKey: "mode") ?? ""
+        let migratedModeID = savedModeID == "advanced-experimental" ? "maximum-experimental" : savedModeID
+        let savedMode = UpscaleMode(rawValue: migratedModeID) ?? .normal
+        if savedModeID != migratedModeID {
+            defaults.set(migratedModeID, forKey: "mode")
+        }
         mode = savedMode.minimumRAMGB <= systemRAMGB ? savedMode : (systemRAMGB >= 16 ? .normal : .fast)
         let savedDeblurMode = DeblurMode(rawValue: defaults.string(forKey: "deblurMode") ?? "") ?? .none
         deblurMode = savedDeblurMode.minimumRAMGB <= systemRAMGB ? savedDeblurMode : .none

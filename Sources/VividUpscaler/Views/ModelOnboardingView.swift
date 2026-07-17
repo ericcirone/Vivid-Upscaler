@@ -102,11 +102,19 @@ struct ModelOnboardingView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(model.title).font(.headline)
+                    if model.mode?.isExperimental == true {
+                        Text("Experimental").font(.caption.bold()).foregroundStyle(.orange)
+                    }
                     Text(model.modelName).font(.caption.monospaced()).foregroundStyle(.secondary)
                     if installed { Text("Installed").font(.caption.bold()).foregroundStyle(.green) }
                 }
                 Text(model.backend).font(.caption2.bold()).foregroundStyle(.secondary)
                 Text(model.detail).font(.callout).foregroundStyle(.secondary)
+                if model.mode?.isExperimental == true {
+                    Text("Generative results may invent detail. HYPIR's official project restricts commercial use without separate permission.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text("Minimum \(model.minimumRAMGB) GB · Recommended \(model.recommendedRAMGB) GB · Large images \(model.largeImageRAMGB) GB · Tiling \(model.defaultTiling)")
                     .font(.caption2)
                     .foregroundStyle(compatible ? Color.secondary.opacity(0.7) : Color.red)

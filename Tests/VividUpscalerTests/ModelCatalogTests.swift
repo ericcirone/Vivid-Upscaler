@@ -5,7 +5,7 @@ import Testing
 struct ModelCatalogTests {
     @Test("Catalog exposes every processing mode")
     func exposesEveryMode() {
-        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum", "deblur-motion", "deblur-defocus"])
+        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum", "maximum-experimental", "deblur-motion", "deblur-defocus"])
         #expect(Set(ModelInfo.choices.compactMap(\.mode)) == Set(UpscaleMode.allCases))
         #expect(Set(ModelInfo.choices.compactMap(\.deblurMode)) == Set([DeblurMode.motion, DeblurMode.defocus]))
     }
@@ -18,6 +18,7 @@ struct ModelCatalogTests {
         #expect(requirements["normal-hq"] == 16)
         #expect(requirements["advanced"] == 16)
         #expect(requirements["maximum"] == 24)
+        #expect(requirements["maximum-experimental"] == 24)
         #expect(requirements["deblur-motion"] == 16)
         #expect(requirements["deblur-defocus"] == 16)
     }
@@ -35,6 +36,11 @@ struct ModelCatalogTests {
         #expect(catalog["advanced"]?.1 == "Native MLX")
         #expect(catalog["maximum"]?.0 == "SeedVR2 3B source precision")
         #expect(catalog["maximum"]?.1 == "Native MLX")
+        #expect(catalog["maximum-experimental"]?.0 == "HYPIR-SD2")
+        #expect(catalog["maximum-experimental"]?.1 == "PyTorch MPS, experimental")
+        #expect(UpscaleMode.maximumExperimental.title == "Maximum Experimental")
+        #expect(UpscaleMode.maximumExperimental.isExperimental)
+        #expect(!UpscaleMode.maximum.isExperimental)
         #expect(catalog["deblur-motion"]?.0 == "Restormer Motion Deblurring")
         #expect(catalog["deblur-motion"]?.1 == "PyTorch MPS")
         #expect(catalog["deblur-defocus"]?.0 == "Restormer Single-Image Defocus Deblurring")
