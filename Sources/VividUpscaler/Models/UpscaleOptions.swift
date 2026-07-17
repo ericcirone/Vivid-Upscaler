@@ -26,7 +26,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         case .fast: "Quickest general-purpose MLX upscaling"
         case .normal: "Main quality and speed balance"
         case .normalHQ: "Photographic restoration for compression, blur, and noise"
-        case .advanced: "Native MLX SeedVR2 restoration with 8-bit weights"
+        case .advanced: "8-bit SeedVR2 at 80% internal scale for faster high-quality restoration"
         case .maximum: "Highest-quality SeedVR2 processing; slowest and most memory intensive"
         case .maximumExperimental: "Experimental HYPIR generative restoration; may reconstruct plausible detail"
         }

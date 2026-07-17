@@ -7,7 +7,7 @@ This is the definitive model reference for the app. The catalog below mirrors `M
 | `fast`                 | `mlx-community/Real-ESRGAN-general-x4v3`    | MLX                           |      No      |        8 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/mlx-community/Real-ESRGAN-general-x4v3)          | Quickest option: a compact native FP16 MLX upscaler for Apple Silicon.                                                                                         |
 | `normal`               | `mlx-community/Real-ESRGAN-x4plus`          | MLX                           |      No      |       16 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/mlx-community/Real-ESRGAN-x4plus)                | The main quality and speed balance with a more powerful conventional single-pass upscaler.                                                                     |
 | `normal-hq`            | `4xNomosWebPhoto_esrgan`                    | PyTorch MPS via Spandrel      |      No      |       16 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/Phips/4xNomosWebPhoto_esrgan)                    | Fast photographic restoration trained for compression, lens blur, noise, and Web/JPEG sources.                                                                 |
-| `advanced`             | `SeedVR2 3B 8-bit`                          | Native MLX                    |      Yes     |       16 GB |           24 GB |           32 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Difficult restoration jobs where a longer wait is acceptable, using the 3B model at 8-bit precision.                                                           |
+| `advanced`             | `SeedVR2 3B 8-bit, 80% internal scale`      | Native MLX                    |      Yes     |       16 GB |           24 GB |           32 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | High-quality SeedVR2 restoration using 8-bit precision and a reduced internal resolution for a meaningful speed improvement over Maximum.                       |
 | `maximum`              | `SeedVR2 3B source precision`               | Native MLX                    |      Yes     |       24 GB |           32 GB |           48 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Highest-quality, slowest SeedVR2 option using the 3B model at source precision.                                                                                |
 | `maximum-experimental` | `HYPIR-SD2`                                 | PyTorch MPS, experimental     |      Yes     |       24 GB |           32 GB |           48 GB | [Official HYPIR model files](https://huggingface.co/lxq007/HYPIR)                            | Maximum-tier experimental generative restoration using a single-pass diffusion-derived model for strong detail reconstruction and adjustable texture richness. |
 | `deblur-motion`        | `Restormer Motion Deblurring`               | PyTorch MPS                   |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Removes camera shake, subject movement, and directional motion blur while preserving the original image dimensions.                                            |
@@ -35,6 +35,32 @@ The default variation seed is:
 ```
 
 A **Try Another Variation** action may generate a new random seed without changing any other restoration settings.
+
+## SeedVR2 processing resolution
+
+The two SeedVR2 modes use different internal processing resolutions so that `advanced` provides a meaningful performance improvement while `maximum` preserves the full-quality path.
+
+| Mode       | Model precision | Internal processing dimensions                      | Final output                                                                 |
+| ---------- | --------------- | --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `advanced` | 8-bit           | `80%` of the requested width and height             | Resized to the exact requested dimensions using high-quality Lanczos resampling |
+| `maximum`  | Source precision | Full requested width and height                    | Uses the full-resolution SeedVR2 result without the Advanced downscale step   |
+
+For `advanced`, calculate the internal dimensions independently for width and height:
+
+```text
+Internal width  = requested width  × 0.80
+Internal height = requested height × 0.80
+```
+
+Round both internal dimensions to values supported by the SeedVR2 adapter before inference. After SeedVR2 finishes, resize the restored result to the exact requested dimensions with Lanczos resampling.
+
+An `80%` linear scale means SeedVR2 processes approximately `64%` of the requested output pixels, or about `36%` fewer pixels. Actual runtime improvement depends on the input dimensions, VAE cost, tiling, memory pressure, and Apple Silicon hardware.
+
+The `advanced` processing scale is fixed and should not be exposed as a user-facing quality slider. SeedVR2 presets, noise settings, color correction, and variation seed remain independently configurable and must not change the internal processing scale.
+
+`maximum` must remain unchanged. It continues to process the full requested dimensions at source precision and should not use the reduced-resolution Advanced path.
+
+When memory permits, `advanced` should prefer untiled VAE processing or the largest safe automatic tile size. Smaller tiles reduce peak memory use but add overlap and per-tile overhead, which can erase some of the intended speed improvement.
 
 ## SeedVR2 presets
 
@@ -373,7 +399,14 @@ The interface should explain that fidelity weight is a trade-off rather than a s
 * `fast`, `normal`, `normal-hq`, `deblur-motion`, `deblur-defocus`, and `face-restore` are deterministic and do not expose a variation seed.
 * `advanced`, `maximum`, and `maximum-experimental` accept a variation seed.
 * A higher or lower variation seed does not represent stronger processing or better quality. Different values select different repeatable generative variations.
-* `advanced` and `maximum` use the same SeedVR2 3B source weights. Advanced loads them at 8-bit precision; Maximum keeps source precision.
+* `advanced` and `maximum` use the same SeedVR2 3B source weights. Advanced loads them at 8-bit precision and runs at `80%` of the requested width and height; Maximum keeps source precision and runs at the full requested dimensions.
+* The `advanced` internal processing scale is fixed at `0.80` for both dimensions and is not a user-facing setting.
+* Advanced internal dimensions must be rounded to values supported by the SeedVR2 adapter before inference.
+* After Advanced SeedVR2 inference, Vivid resizes the result to the exact requested dimensions using high-quality Lanczos resampling.
+* An Advanced linear scale of `0.80` processes approximately `64%` as many output pixels as the full-resolution Maximum path.
+* `maximum` must not inherit the Advanced processing scale or its final Lanczos enlargement step.
+* SeedVR2 presets, input noise, latent noise, color correction, and variation seed must not alter the selected mode's processing scale.
+* Advanced should avoid unnecessary small VAE tiles. It should use untiled processing when safe or the largest tile selected by automatic memory management.
 * SeedVR2 presets apply only to `advanced` and `maximum`.
 * The default SeedVR2 preset is `faithful`.
 * The default SeedVR2 variation seed is `42`.
@@ -424,8 +457,14 @@ Input image
   -> Optional Restormer deblur
   -> Optional CodeFormer face restoration
   -> Selected Vivid upscale mode
+  -> Determine model processing dimensions
+       -> Advanced SeedVR2: 80% of requested width and height
+       -> Maximum SeedVR2: full requested width and height
+       -> Other modes: use their existing dimension rules
   -> Apply model-specific preset, prompt, variation, and restoration settings
-  -> Resize to requested dimensions
+  -> Run model inference
+  -> Advanced only: Lanczos resize to the exact requested dimensions
+  -> Apply any existing final resize required by the selected mode
   -> Preserve metadata and save
 ```
 

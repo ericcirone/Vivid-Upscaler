@@ -188,7 +188,7 @@ actor VividCLI {
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_codeformer.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_hypir_blend.py").path)
-            && version == "25"
+            && version == "26"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

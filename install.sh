@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="25"
+RUNTIME_VERSION="26"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -852,7 +852,56 @@ cat > "$INSTALL_ROOT/vivid_seedvr2.py" <<'PY'
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+
+from PIL import Image, ImageOps
+
+
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument("--input-noise-scale", type=float, default=0.0)
+parser.add_argument("--latent-noise-scale", type=float, default=0.0)
+parser.add_argument(
+    "--color-correction",
+    choices=["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"],
+    default="lab",
+)
+parser.add_argument("--vivid-target-width", type=int)
+parser.add_argument("--vivid-target-height", type=int)
+parser.add_argument("--vivid-untiled-vae", action="store_true")
+parser.add_argument("--vivid-plan-dimensions", nargs=3, metavar=("INPUT", "SHORT_EDGE", "MAX_LONG_EDGE"))
+vivid_args, remaining_args = parser.parse_known_args()
+sys.argv = [sys.argv[0], *remaining_args]
+
+if vivid_args.vivid_plan_dimensions is not None:
+    input_path, short_edge_value, max_long_edge_value = vivid_args.vivid_plan_dimensions
+    with Image.open(input_path) as opened:
+        width, height = ImageOps.exif_transpose(opened).size
+    short_edge = int(short_edge_value)
+    max_long_edge = int(max_long_edge_value)
+    scale = short_edge / min(width, height)
+    if max(width, height) * scale > max_long_edge:
+        scale = max_long_edge / max(width, height)
+    requested_width = max(1, round(width * scale))
+    requested_height = max(1, round(height * scale))
+
+    def nearest_supported_dimension(value: float) -> int:
+        return max(2, int(math.floor(value / 2.0 + 0.5)) * 2)
+
+    internal_width = nearest_supported_dimension(requested_width * 0.80)
+    internal_height = nearest_supported_dimension(requested_height * 0.80)
+    print(requested_width, requested_height, internal_width, internal_height)
+    raise SystemExit(0)
+
+if (vivid_args.vivid_target_width is None) != (vivid_args.vivid_target_height is None):
+    parser.error("--vivid-target-width and --vivid-target-height must be provided together")
+if vivid_args.vivid_target_width is not None and (
+    vivid_args.vivid_target_width < 2
+    or vivid_args.vivid_target_height < 2
+    or vivid_args.vivid_target_width % 2
+    or vivid_args.vivid_target_height % 2
+):
+    parser.error("Vivid SeedVR2 target dimensions must be positive even values")
 
 import cv2
 import mlx.core as mx
@@ -869,24 +918,39 @@ from mflux.utils.image_util import ImageUtil
 from mflux.utils.metadata_reader import MetadataReader
 
 
-parser = argparse.ArgumentParser(add_help=False)
-parser.add_argument("--input-noise-scale", type=float, default=0.0)
-parser.add_argument("--latent-noise-scale", type=float, default=0.0)
-parser.add_argument(
-    "--color-correction",
-    choices=["lab", "wavelet", "wavelet_adaptive", "hsv", "adain", "none"],
-    default="lab",
-)
-vivid_args, remaining_args = parser.parse_known_args()
-sys.argv = [sys.argv[0], *remaining_args]
-
-
 def _to_numpy(image: mx.array) -> np.ndarray:
     return np.asarray(image.astype(mx.float32), dtype=np.float32)
 
 
 def _from_numpy(image: np.ndarray, dtype) -> mx.array:
     return mx.array(image.astype(np.float32), dtype=mx.float32).astype(dtype)
+
+
+def _preprocess_image_to_dimensions(
+    image_path: str,
+    width: int,
+    height: int,
+    softness: float,
+) -> tuple[mx.array, int, int]:
+    image = Image.open(image_path).convert("RGB")
+    factor = 1.0 + max(0.0, min(1.0, softness)) * 7.0
+    if factor > 1.0:
+        down_width = max(2, int(width / factor))
+        down_height = max(2, int(height / factor))
+        image = image.resize((down_width, down_height), Image.Resampling.BICUBIC)
+    resized = image.resize((width, height), Image.Resampling.BICUBIC)
+
+    pad_width = (16 - width % 16) % 16
+    pad_height = (16 - height % 16) % 16
+    if pad_width or pad_height:
+        padded = Image.new("RGB", (width + pad_width, height + pad_height), (0, 0, 0))
+        padded.paste(resized, (0, 0))
+        resized = padded
+
+    image_mx = mx.array(np.array(resized)).astype(mx.float32) / 255.0
+    image_mx = mx.clip(image_mx, 0.0, 1.0) * 2.0 - 1.0
+    image_mx = mx.transpose(image_mx, (2, 0, 1))[None, ...]
+    return image_mx, height, width
 
 
 def _hsv_match(content: np.ndarray, style: np.ndarray) -> np.ndarray:
@@ -937,11 +1001,21 @@ def _generate_image(
     softness=0.0,
 ):
     print("[progress] 30% Preparing image", flush=True)
-    processed_image, true_height, true_width = SeedVR2Util.preprocess_image(
-        image_path=image_path,
-        resolution=resolution,
-        softness=softness,
-    )
+    if vivid_args.vivid_target_width is not None:
+        processed_image, true_height, true_width = _preprocess_image_to_dimensions(
+            image_path=image_path,
+            width=vivid_args.vivid_target_width,
+            height=vivid_args.vivid_target_height,
+            softness=softness,
+        )
+    else:
+        processed_image, true_height, true_width = SeedVR2Util.preprocess_image(
+            image_path=image_path,
+            resolution=resolution,
+            softness=softness,
+        )
+    if vivid_args.vivid_untiled_vae:
+        self.tiling_config = None
     color_reference = processed_image
     if vivid_args.input_noise_scale:
         input_noise = mx.random.normal(
@@ -1540,7 +1614,7 @@ Modes:
   fast      Quickest upscaling with Real-ESRGAN general x4v3 via MLX.
   normal    Main quality/speed balance with Real-ESRGAN x4plus via MLX. Default.
   normal-hq Photographic restoration with 4xNomosWebPhoto_esrgan via Spandrel MPS.
-  advanced  Native MLX SeedVR2 3B restoration with 8-bit quantization.
+  advanced  Native MLX SeedVR2 3B restoration with 8-bit quantization at 80% internal scale.
   maximum   Native MLX SeedVR2 3B restoration at source precision.
   maximum-experimental
             Maximum-tier experimental HYPIR-SD2 generative restoration via PyTorch MPS.
@@ -2073,23 +2147,36 @@ PY
 fi
 
 ADVANCED_TILE_NOTE="off"
+ADVANCED_TARGET_WIDTH=""
+ADVANCED_TARGET_HEIGHT=""
+SEEDVR2_RESOLUTION="$RESOLUTION"
+if [[ "$MODE" == "advanced" ]]; then
+  ADVANCED_DIMENSIONS="$("$PYTHON" "$SEEDVR2_HELPER" --vivid-plan-dimensions "$INPUT" "$RESOLUTION" "$MAX_RESOLUTION")"
+  read -r REQUESTED_WIDTH REQUESTED_HEIGHT ADVANCED_TARGET_WIDTH ADVANCED_TARGET_HEIGHT <<< "$ADVANCED_DIMENSIONS"
+  SEEDVR2_RESOLUTION=$((ADVANCED_TARGET_WIDTH < ADVANCED_TARGET_HEIGHT ? ADVANCED_TARGET_WIDTH : ADVANCED_TARGET_HEIGHT))
+fi
 if [[ "$MODE" == "advanced" || "$MODE" == "maximum" ]]; then
-  ADVANCED_TILE_NOTE="$($PYTHON - "$TILE_MODE" "$RESOLUTION" "$MAX_RESOLUTION" <<'PY'
-import sys
-tile_mode = sys.argv[1]
-short_edge = int(sys.argv[2])
-long_edge = int(sys.argv[3])
-megapixels = short_edge * long_edge / 1_000_000
-if tile_mode == 'on':
-    print('on')
-elif tile_mode == 'off':
-    print('off')
-else:
-    # MFLUX low-RAM mode releases the transformer before VAE decode. Keep auto
-    # mode safe on unified-memory Macs.
-    print('on')
-PY
-)"
+  case "$TILE_MODE" in
+    on) ADVANCED_TILE_NOTE="on" ;;
+    off) ADVANCED_TILE_NOTE="off" ;;
+    auto)
+      if [[ "$MODE" == "maximum" ]]; then
+        # Preserve Maximum's existing full-resolution, low-RAM path.
+        ADVANCED_TILE_NOTE="on"
+      else
+        ADVANCED_PIXELS=$((ADVANCED_TARGET_WIDTH * ADVANCED_TARGET_HEIGHT))
+        # Advanced processes 36% fewer pixels. Avoid tiled VAE overhead for
+        # conservatively safe jobs, while retaining the lower-memory path for
+        # larger images and 16 GB systems.
+        if (( (AVAILABLE_RAM >= 32 && ADVANCED_PIXELS <= 8000000)
+            || (AVAILABLE_RAM >= 24 && ADVANCED_PIXELS <= 4000000) )); then
+          ADVANCED_TILE_NOTE="off"
+        else
+          ADVANCED_TILE_NOTE="on"
+        fi
+      fi
+      ;;
+  esac
 fi
 
 PROCESSING_OUTPUT="$OUTPUT"
@@ -2137,9 +2224,10 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
   fi
   case "$MODE" in
     advanced)
-      echo "      Model:  SeedVR2 3B 8-bit via native MLX"
+      echo "      Model:  SeedVR2 3B 8-bit via native MLX at 80% internal scale"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
       echo "      Tiling: $ADVANCED_TILE_NOTE"
+      echo "      Advanced processing: ${ADVANCED_TARGET_WIDTH}x${ADVANCED_TARGET_HEIGHT} (final output ${REQUESTED_WIDTH}x${REQUESTED_HEIGHT})"
       echo "      Variation seed: $SEED"
       echo "      SeedVR2 preset: $SEEDVR2_PRESET ($INPUT_NOISE_SCALE input noise, $LATENT_NOISE_SCALE latent noise, $COLOR_CORRECTION color)"
       ;;
@@ -2363,12 +2451,19 @@ else
   MFLUX_ARGS=(
     --image-path "$PROCESSING_INPUT"
     --model "$MODEL_ROOT/SEEDVR2"
-    --resolution "$RESOLUTION"
+    --resolution "$SEEDVR2_RESOLUTION"
     --seed "$SEED"
     --output "$PROCESSING_OUTPUT"
   )
   if [[ "$MODE" == "advanced" ]]; then
-    MFLUX_ARGS+=(--quantize 8)
+    MFLUX_ARGS+=(
+      --quantize 8
+      --vivid-target-width "$ADVANCED_TARGET_WIDTH"
+      --vivid-target-height "$ADVANCED_TARGET_HEIGHT"
+    )
+    if [[ "$ADVANCED_TILE_NOTE" == "off" ]]; then
+      MFLUX_ARGS+=(--vivid-untiled-vae)
+    fi
   fi
   if [[ "$ADVANCED_TILE_NOTE" == "on" ]]; then
     MFLUX_ARGS+=(--low-ram)

@@ -126,14 +126,14 @@ A bare output filename is saved beside the input file. Include a slash, such as 
 | `fast` | `mlx-community/Real-ESRGAN-general-x4v3` | MLX | 8 GB | 16 GB | 24 GB | Quickest general-purpose upscaling |
 | `normal` | `mlx-community/Real-ESRGAN-x4plus` | MLX | 16 GB | 16 GB | 24 GB | Main quality and speed balance |
 | `normal-hq` | `4xNomosWebPhoto_esrgan` | PyTorch MPS via Spandrel | 16 GB | 16 GB | 24 GB | Photographic restoration for compression, blur, noise, and Web/JPEG sources |
-| `advanced` | SeedVR2 3B 8-bit | Native MLX | 16 GB | 24 GB | 32 GB | Difficult restoration jobs where a longer wait is acceptable |
+| `advanced` | SeedVR2 3B 8-bit, 80% internal scale | Native MLX | 16 GB | 24 GB | 32 GB | High-quality restoration with a meaningful speed improvement over Maximum |
 | `maximum` | SeedVR2 3B source precision | Native MLX | 24 GB | 32 GB | 48 GB | Highest-quality and slowest processing |
 | `maximum-experimental` | HYPIR-SD2 | PyTorch MPS, experimental | 24 GB | 32 GB | 48 GB | Maximum-tier opt-in generative restoration with strong detail reconstruction and adjustable texture richness |
 | `deblur-motion` | Restormer Motion Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Camera shake, subject movement, and directional motion blur |
 | `deblur-defocus` | Restormer Single-Image Defocus Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Out-of-focus and lens-related blur |
 | `face-restore` | CodeFormer v0.1.0 | PyTorch MPS via Vivid adapter | 8 GB | 16 GB | 24 GB | Detected-face restoration with an adjustable reconstruction/fidelity trade-off |
 
-SeedVR2 is intentionally limited to the 3B model. Advanced quantizes it to 8-bit at load time; Maximum keeps the source precision.
+SeedVR2 is intentionally limited to the 3B model. Advanced quantizes it to 8-bit at load time and processes 80% of the requested width and height before a high-quality Lanczos resize to the exact output dimensions. Maximum keeps the source precision and processes the full requested dimensions.
 
 HYPIR processes the requested output dimensions directly. Its `natural`, `balanced`, and `enhanced` presets use restoration strengths of 0.45, 0.70, and 1.00 while also controlling the photographic prompt and patch overlap; `balanced` is the default. Restoration strength blends source and HYPIR-generated high-frequency detail while retaining the source's low-frequency structure. The `custom` preset accepts an explicit strength, prompt, patch size, and patch stride. Smaller strides increase overlap and processing time. Strength does not reduce inference cost because the full HYPIR result is generated before blending. For compatibility, the generic `--tile` mapping is used only when `--tile` is explicitly supplied without HYPIR preset settings.
 
