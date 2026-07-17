@@ -114,6 +114,7 @@ actor VividCLI {
             arguments += ["--hypir-preset", options.hypirOptions.preset.rawValue]
             if options.hypirOptions.preset == .custom {
                 let settings = options.hypirOptions.resolvedSettings
+                arguments += ["--hypir-restoration-strength", String(settings.restorationStrength)]
                 arguments += ["--hypir-patch-size", String(settings.patchSize)]
                 arguments += ["--hypir-patch-stride", String(settings.patchStride)]
                 arguments += ["--hypir-prompt", settings.prompt]
@@ -186,7 +187,8 @@ actor VividCLI {
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_codeformer.py").path)
-            && version == "24"
+            && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_hypir_blend.py").path)
+            && version == "25"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

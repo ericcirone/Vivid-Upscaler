@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="24"
+RUNTIME_VERSION="25"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -749,6 +749,103 @@ if __name__ == "__main__":
 PY
 chmod +x "$INSTALL_ROOT/vivid_codeformer.py"
 
+cat > "$INSTALL_ROOT/vivid_hypir_blend.py" <<'PY'
+#!/usr/bin/env python3
+"""Blend source and HYPIR high-frequency detail at a caller-selected strength."""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import torch
+from PIL import Image, ImageOps
+from torch.nn import functional as F
+
+
+def wavelet_blur(image: torch.Tensor, radius: int) -> torch.Tensor:
+    kernel = torch.tensor(
+        [
+            [0.0625, 0.125, 0.0625],
+            [0.125, 0.25, 0.125],
+            [0.0625, 0.125, 0.0625],
+        ],
+        dtype=image.dtype,
+        device=image.device,
+    ).view(1, 1, 3, 3).repeat(3, 1, 1, 1)
+    padded = F.pad(image, (radius, radius, radius, radius), mode="replicate")
+    return F.conv2d(padded, kernel, groups=3, dilation=radius)
+
+
+def wavelet_decomposition(image: torch.Tensor, levels: int = 5) -> tuple[torch.Tensor, torch.Tensor]:
+    high_frequency = torch.zeros_like(image)
+    low_frequency = image
+    for level in range(levels):
+        next_low_frequency = wavelet_blur(low_frequency, 2**level)
+        high_frequency += low_frequency - next_low_frequency
+        low_frequency = next_low_frequency
+    return high_frequency, low_frequency
+
+
+def image_tensor(image: Image.Image) -> torch.Tensor:
+    array = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+    return torch.from_numpy(array).permute(2, 0, 1).unsqueeze(0)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("source")
+    parser.add_argument("generated")
+    parser.add_argument("output")
+    parser.add_argument("--strength", required=True, type=float)
+    args = parser.parse_args()
+
+    if not 0.0 <= args.strength <= 1.0:
+        parser.error("--strength must be between 0 and 1")
+
+    with Image.open(args.generated) as generated_image:
+        generated = ImageOps.exif_transpose(generated_image).convert("RGB")
+        target_size = generated.size
+
+        with Image.open(args.source) as source_image:
+            source = ImageOps.exif_transpose(source_image).convert("RGB")
+            if source.size != target_size:
+                source = source.resize(target_size, Image.Resampling.LANCZOS)
+
+        if args.strength <= 0.0:
+            result = source
+        elif args.strength >= 1.0:
+            result = generated.copy()
+        else:
+            source_tensor = image_tensor(source)
+            generated_tensor = image_tensor(generated)
+            source_high, source_low = wavelet_decomposition(source_tensor)
+            generated_high, _ = wavelet_decomposition(generated_tensor)
+            blended = source_low + torch.lerp(source_high, generated_high, args.strength)
+            array = (
+                blended.squeeze(0)
+                .permute(1, 2, 0)
+                .clamp(0.0, 1.0)
+                .mul(255.0)
+                .round()
+                .to(torch.uint8)
+                .numpy()
+            )
+            result = Image.fromarray(array, mode="RGB")
+
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result.save(output, format="PNG")
+
+    print(f"      HYPIR restoration strength: {args.strength:.2f}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+chmod +x "$INSTALL_ROOT/vivid_hypir_blend.py"
+
 cat > "$INSTALL_ROOT/vivid_seedvr2.py" <<'PY'
 #!/usr/bin/env python3
 """Vivid's SeedVR2 adapter for the restoration controls not exposed by MFLUX."""
@@ -948,6 +1045,11 @@ if [[ -f "$SCRIPT_DIR/vivid_codeformer.py" ]]; then
   CODEFORMER_HELPER="$SCRIPT_DIR/vivid_codeformer.py"
 else
   CODEFORMER_HELPER="$INSTALL_ROOT/vivid_codeformer.py"
+fi
+if [[ -f "$SCRIPT_DIR/vivid_hypir_blend.py" ]]; then
+  HYPIR_BLEND_HELPER="$SCRIPT_DIR/vivid_hypir_blend.py"
+else
+  HYPIR_BLEND_HELPER="$INSTALL_ROOT/vivid_hypir_blend.py"
 fi
 CODEFORMER_ROOT="$INSTALL_ROOT/CodeFormer-source"
 MODEL_ROOT="$INSTALL_ROOT/models"
@@ -1472,7 +1574,9 @@ Options:
   --latent-noise-scale N       SeedVR2 latent noise from 0 to 1
   --color-correction METHOD    lab, wavelet, wavelet_adaptive, hsv, adain, or none
   --hypir-preset PRESET        natural, balanced, enhanced, or custom
-                               HYPIR only. Default: balanced
+                               HYPIR only. Strengths: 0.45, 0.70, 1.00. Default: balanced
+  --hypir-restoration-strength N
+                               Custom HYPIR detail blend from 0 to 1. Default: 0.70
   --hypir-patch-size N         Custom HYPIR patch size: 512 through 1024 by 128
   --hypir-patch-stride N       Custom HYPIR stride: 256 through patch size by 128
   --hypir-prompt TEXT          Custom HYPIR photographic-result prompt
@@ -1488,7 +1592,7 @@ HELP
   exit 0
 fi
 
-if [[ ! -x "$PYTHON" || ! -f "$UPSCALE_HELPER" || ! -f "$SEEDVR2_HELPER" ]]; then
+if [[ ! -x "$PYTHON" || ! -f "$UPSCALE_HELPER" || ! -f "$SEEDVR2_HELPER" || ! -f "$HYPIR_BLEND_HELPER" ]]; then
   echo "Vivid's runtime is not installed. Open Vivid Upscaler or run install.sh." >&2
   exit 1
 fi
@@ -1525,6 +1629,7 @@ COLOR_CORRECTION=""
 HYPIR_PRESET="balanced"
 HYPIR_SETTINGS_REQUESTED="0"
 HYPIR_CUSTOM_SETTINGS_REQUESTED="0"
+HYPIR_RESTORATION_STRENGTH="0.70"
 HYPIR_PATCH_SIZE=""
 HYPIR_PATCH_STRIDE=""
 HYPIR_PROMPT=""
@@ -1643,6 +1748,12 @@ while [[ $# -gt 0 ]]; do
     --hypir-preset)
       HYPIR_PRESET="${2:?Missing value for --hypir-preset}"
       HYPIR_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --hypir-restoration-strength)
+      HYPIR_RESTORATION_STRENGTH="${2:?Missing value for --hypir-restoration-strength}"
+      HYPIR_SETTINGS_REQUESTED="1"
+      HYPIR_CUSTOM_SETTINGS_REQUESTED="1"
       shift 2
       ;;
     --hypir-patch-size)
@@ -1781,7 +1892,7 @@ if [[ "$HYPIR_SETTINGS_REQUESTED" == "1" && "$MODE" != "maximum-experimental" ]]
 fi
 
 if [[ "$HYPIR_CUSTOM_SETTINGS_REQUESTED" == "1" && "$HYPIR_PRESET" != "custom" ]]; then
-  echo "Custom HYPIR patch, stride, and prompt settings require --hypir-preset custom" >&2
+  echo "Custom HYPIR restoration strength, patch, stride, and prompt settings require --hypir-preset custom" >&2
   exit 2
 fi
 
@@ -1789,21 +1900,25 @@ if [[ "$MODE" == "maximum-experimental" && ( "$HYPIR_SETTINGS_REQUESTED" == "1" 
   HYPIR_EXPLICIT_CONFIG="1"
   case "$HYPIR_PRESET" in
     natural)
+      HYPIR_RESTORATION_STRENGTH="0.45"
       HYPIR_PATCH_SIZE="1024"
       HYPIR_PATCH_STRIDE="768"
       HYPIR_PROMPT="a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness"
       ;;
     balanced)
+      HYPIR_RESTORATION_STRENGTH="0.70"
       HYPIR_PATCH_SIZE="768"
       HYPIR_PATCH_STRIDE="512"
       HYPIR_PROMPT="a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness"
       ;;
     enhanced)
+      HYPIR_RESTORATION_STRENGTH="1.00"
       HYPIR_PATCH_SIZE="512"
       HYPIR_PATCH_STRIDE="256"
       HYPIR_PROMPT="a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing"
       ;;
     custom)
+      : "${HYPIR_RESTORATION_STRENGTH:=0.70}"
       : "${HYPIR_PATCH_SIZE:=768}"
       : "${HYPIR_PATCH_STRIDE:=512}"
       : "${HYPIR_PROMPT:=a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness}"
@@ -1814,26 +1929,28 @@ if [[ "$MODE" == "maximum-experimental" && ( "$HYPIR_SETTINGS_REQUESTED" == "1" 
       ;;
   esac
 
-  if ! "$PYTHON" - "$HYPIR_PATCH_SIZE" "$HYPIR_PATCH_STRIDE" "$HYPIR_PROMPT" <<'PY'
+  if ! "$PYTHON" - "$HYPIR_RESTORATION_STRENGTH" "$HYPIR_PATCH_SIZE" "$HYPIR_PATCH_STRIDE" "$HYPIR_PROMPT" <<'PY'
 import sys
 
 try:
-    patch_size = int(sys.argv[1])
-    patch_stride = int(sys.argv[2])
+    restoration_strength = float(sys.argv[1])
+    patch_size = int(sys.argv[2])
+    patch_stride = int(sys.argv[3])
 except ValueError:
     raise SystemExit(1)
 
 valid = (
-    512 <= patch_size <= 1024
+    0.0 <= restoration_strength <= 1.0
+    and 512 <= patch_size <= 1024
     and (patch_size - 512) % 128 == 0
     and 256 <= patch_stride <= patch_size
     and (patch_stride - 256) % 128 == 0
-    and bool(sys.argv[3].strip())
+    and bool(sys.argv[4].strip())
 )
 raise SystemExit(0 if valid else 1)
 PY
   then
-    echo "HYPIR patch size must be 512...1024 by 128, stride must be 256...patch size by 128, and prompt must not be empty" >&2
+    echo "HYPIR restoration strength must be 0...1, patch size must be 512...1024 by 128, stride must be 256...patch size by 128, and prompt must not be empty" >&2
     exit 2
   fi
 fi
@@ -2174,6 +2291,7 @@ PY
   if [[ "$SHOW_PROGRESS" == "1" ]]; then
     echo "      HYPIR target: ${HYPIR_TARGET_WIDTH}x${HYPIR_TARGET_HEIGHT}"
     echo "      HYPIR preset: $HYPIR_PRESET"
+    echo "      HYPIR restoration strength: $HYPIR_RESTORATION_STRENGTH"
     echo "      HYPIR tiles: ${HYPIR_PATCH_SIZE}px, ${HYPIR_STRIDE}px stride"
     echo "      HYPIR precision: BF16 on MPS"
   fi
@@ -2205,11 +2323,25 @@ PY
 
   if [[ "$STATUS" -eq 0 ]]; then
     if [[ "$SHOW_PROGRESS" == "1" ]]; then
+      echo "[progress] 90% Blending restoration detail"
+    fi
+    set +e
+    "$PYTHON" -u "$HYPIR_BLEND_HELPER" \
+      "$PROCESSING_INPUT" \
+      "$HYPIR_WORK/output/result/source.png" \
+      "$HYPIR_WORK/blended.png" \
+      --strength "$HYPIR_RESTORATION_STRENGTH"
+    STATUS=$?
+    set -e
+  fi
+
+  if [[ "$STATUS" -eq 0 ]]; then
+    if [[ "$SHOW_PROGRESS" == "1" ]]; then
       echo "[progress] 92% Finalizing output"
     fi
     set +e
     "$PYTHON" -u "$UPSCALE_HELPER" \
-      "$HYPIR_WORK/output/result/source.png" "$OUTPUT" \
+      "$HYPIR_WORK/blended.png" "$OUTPUT" \
       --model-root "$MODEL_ROOT" \
       --mode fast \
       --short-edge "$RESOLUTION" \

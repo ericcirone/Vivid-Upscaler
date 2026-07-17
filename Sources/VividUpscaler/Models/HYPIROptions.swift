@@ -19,10 +19,10 @@ enum HYPIRPreset: String, CaseIterable, Identifiable, Codable {
 
     var detail: String {
         switch self {
-        case .natural: "Restrained photographic detail with larger scene context."
-        case .balanced: "Balances context, overlap consistency, memory use, and speed."
-        case .enhanced: "Stronger detail reconstruction and overlap at a substantial speed cost."
-        case .custom: "Uses your prompt, patch size, and patch stride."
+        case .natural: "Restrained generated detail while preserving more source texture."
+        case .balanced: "Balances generated detail, source fidelity, memory use, and speed."
+        case .enhanced: "Full HYPIR-generated detail with stronger overlap at a substantial speed cost."
+        case .custom: "Uses your restoration strength, prompt, patch size, and patch stride."
         }
     }
 
@@ -30,18 +30,21 @@ enum HYPIRPreset: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .natural:
             .init(
+                restorationStrength: 0.45,
                 patchSize: 1024,
                 patchStride: 768,
                 prompt: "a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness"
             )
         case .balanced:
             .init(
+                restorationStrength: 0.70,
                 patchSize: 768,
                 patchStride: 512,
                 prompt: HYPIRSettings.balancedPrompt
             )
         case .enhanced:
             .init(
+                restorationStrength: 1.00,
                 patchSize: 512,
                 patchStride: 256,
                 prompt: "a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing"
@@ -56,6 +59,7 @@ struct HYPIRSettings: Equatable {
     static let balancedPrompt = "a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness"
     static let supportedPatchSizes = Array(stride(from: 512, through: 1024, by: 128))
 
+    var restorationStrength: Double
     var patchSize: Int
     var patchStride: Int
     var prompt: String
@@ -76,6 +80,7 @@ struct HYPIRSettings: Equatable {
 
 struct HYPIROptions: Equatable {
     var preset: HYPIRPreset = .balanced
+    var customRestorationStrength: Double = 0.70
     var customPatchSize: Int = 768
     var customPatchStride: Int = 512
     var customPrompt: String = HYPIRSettings.balancedPrompt
@@ -87,6 +92,7 @@ struct HYPIROptions: Equatable {
 
         let patchSize = HYPIRSettings.normalizedPatchSize(customPatchSize)
         return .init(
+            restorationStrength: min(max(customRestorationStrength, 0), 1),
             patchSize: patchSize,
             patchStride: HYPIRSettings.normalizedPatchStride(customPatchStride, patchSize: patchSize),
             prompt: customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

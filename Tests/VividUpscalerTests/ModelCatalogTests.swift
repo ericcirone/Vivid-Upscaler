@@ -61,26 +61,31 @@ struct ModelCatalogTests {
         #expect(SeedVR2Preset.softerDetail.settings == .init(inputNoiseScale: 0, latentNoiseScale: 0.08, colorCorrection: .wavelet))
         #expect(SeedVR2Options(preset: .custom, customInputNoiseScale: -1, customLatentNoiseScale: 2).resolvedSettings == .init(inputNoiseScale: 0, latentNoiseScale: 1, colorCorrection: .lab))
         #expect(HYPIRPreset.natural.settings == .init(
+            restorationStrength: 0.45,
             patchSize: 1024,
             patchStride: 768,
             prompt: "a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness"
         ))
         #expect(HYPIRPreset.balanced.settings == .init(
+            restorationStrength: 0.70,
             patchSize: 768,
             patchStride: 512,
             prompt: HYPIRSettings.balancedPrompt
         ))
         #expect(HYPIRPreset.enhanced.settings == .init(
+            restorationStrength: 1.00,
             patchSize: 512,
             patchStride: 256,
             prompt: "a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing"
         ))
         #expect(HYPIROptions(
             preset: .custom,
+            customRestorationStrength: 2,
             customPatchSize: 600,
             customPatchStride: 900,
             customPrompt: "  "
         ).resolvedSettings == .init(
+            restorationStrength: 1,
             patchSize: 640,
             patchStride: 640,
             prompt: HYPIRSettings.balancedPrompt
@@ -157,12 +162,14 @@ struct ModelCatalogTests {
 
         options.hypirOptions = .init(
             preset: .custom,
+            customRestorationStrength: 0.25,
             customPatchSize: 896,
             customPatchStride: 640,
             customPrompt: "natural portrait photograph"
         )
         arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
         #expect(containsPair("--hypir-preset", "custom"))
+        #expect(containsPair("--hypir-restoration-strength", "0.25"))
         #expect(containsPair("--hypir-patch-size", "896"))
         #expect(containsPair("--hypir-patch-stride", "640"))
         #expect(containsPair("--hypir-prompt", "natural portrait photograph"))
@@ -227,6 +234,7 @@ struct ModelCatalogTests {
         firstStore.deblurMode = .motion
         firstStore.faceRestoreEnabled = true
         firstStore.hypirPreset = .enhanced
+        firstStore.hypirRestorationStrength = 0.25
         firstStore.hypirPatchSize = 1_024
         firstStore.hypirPatchStride = 768
         firstStore.hypirPrompt = "custom prompt"
@@ -243,6 +251,7 @@ struct ModelCatalogTests {
         #expect(restartedStore.deblurMode == .none)
         #expect(!restartedStore.faceRestoreEnabled)
         #expect(restartedStore.hypirPreset == .balanced)
+        #expect(restartedStore.hypirRestorationStrength == 0.70)
         #expect(restartedStore.hypirPatchSize == 768)
         #expect(restartedStore.hypirPatchStride == 512)
         #expect(restartedStore.hypirPrompt == HYPIRSettings.balancedPrompt)

@@ -126,6 +126,11 @@ struct OptionsView: View {
                         .foregroundStyle(.secondary)
 
                     if store.hypirPreset == .custom {
+                        LabeledContent("Restoration strength") {
+                            Text(store.hypirRestorationStrength, format: .number.precision(.fractionLength(2)))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $store.hypirRestorationStrength, in: 0...1, step: 0.01)
                         Picker("Patch size", selection: $store.hypirPatchSize) {
                             ForEach(HYPIRSettings.supportedPatchSizes, id: \.self) { value in
                                 Text("\(value) px").tag(value)
@@ -145,13 +150,20 @@ struct OptionsView: View {
                         TextField("Prompt", text: $store.hypirPrompt, axis: .vertical)
                             .lineLimit(2...4)
                     } else if let settings = store.hypirPreset.settings {
+                        LabeledContent("Restoration strength") {
+                            Text(settings.restorationStrength, format: .number.precision(.fractionLength(2)))
+                                .monospacedDigit()
+                        }
                         LabeledContent("Patch configuration", value: "\(settings.patchSize) / \(settings.patchStride)")
                         Text(settings.prompt)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
 
-                    Text("Smaller strides increase overlap and processing time. Strong prompts can invent identity-sensitive detail.")
+                    Text("Strength blends source and HYPIR-generated texture; increasing it does not guarantee higher quality and does not shorten inference.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("Smaller strides increase overlap and processing time. Strong prompts and higher strength can invent identity-sensitive detail.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }

@@ -115,24 +115,27 @@ The following presets apply only to:
 
 * `maximum-experimental`
 
-Each HYPIR preset controls the text prompt and tiling configuration. The variation seed and requested output dimensions remain independently configurable.
+Each HYPIR preset controls restoration strength, the text prompt, and the tiling configuration. The variation seed and requested output dimensions remain independently configurable.
 
-The prompt is the primary control for the desired restoration style. Patch size and patch stride primarily control memory use, scene context, tile overlap, seam consistency, and processing time. They do not directly act as a restoration-strength slider.
+The prompt controls the desired restoration style. Patch size and patch stride primarily control memory use, scene context, tile overlap, seam consistency, and processing time.
+
+Restoration strength is a Vivid-specific postprocessing control that blends HYPIR-generated high-frequency detail with the source image's high-frequency detail. It provides a more predictable natural-to-enhanced adjustment than prompt wording alone.
 
 The default HYPIR preset is `balanced`.
 
-| Preset     | Patch size | Patch stride | Approximate overlap | Description                                                                                                       |
-| ---------- | ---------: | -----------: | ------------------: | ----------------------------------------------------------------------------------------------------------------- |
-| `natural`  |     `1024` |        `768` |               `25%` | Favors larger scene context, restrained photographic detail, and fewer tiled model calls.                         |
-| `balanced` |      `768` |        `512` |               `33%` | Balances available context, overlap consistency, memory use, and processing speed. Recommended as the default.    |
-| `enhanced` |      `512` |        `256` |               `50%` | Uses the strongest overlap and a more aggressive prompt for heavily degraded images, at a substantial speed cost. |
+| Preset     | Restoration strength | Patch size | Patch stride | Approximate overlap | Description                                                                                                                 |
+| ---------- | -------------------: | ---------: | -----------: | ------------------: | --------------------------------------------------------------------------------------------------------------------------- |
+| `natural`  |               `0.45` |     `1024` |        `768` |               `25%` | Applies restrained generated detail while preserving more of the source image's natural texture.                            |
+| `balanced` |               `0.70` |      `768` |        `512` |               `33%` | Balances generated detail, source fidelity, processing speed, memory use, and tile consistency. Recommended as the default. |
+| `enhanced` |               `1.00` |      `512` |        `256` |               `50%` | Applies the full HYPIR-generated detail result with stronger overlap and a more aggressive restoration prompt.              |
 
 ### Natural
 
 ```text
-Patch size:   1024
-Patch stride: 768
-Prompt:       a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness
+Restoration strength: 0.45
+Patch size:          1024
+Patch stride:        768
+Prompt:              a natural photograph, realistic skin texture, accurate facial features, subtle detail, soft photographic sharpness
 ```
 
 Use for:
@@ -144,14 +147,15 @@ Use for:
 * Results that should remain subtle and photographic
 * Faster processing when the larger patch fits available memory
 
-The Natural preset uses a restrained prompt and a larger patch to give HYPIR more surrounding image context. It should avoid exaggerated prompt terms that encourage unnecessary texture reconstruction.
+The Natural preset blends more of the source image's existing high-frequency information into the result. It uses a restrained prompt and a larger patch to give HYPIR more surrounding image context.
 
 ### Balanced
 
 ```text
-Patch size:   768
-Patch stride: 512
-Prompt:       a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness
+Restoration strength: 0.70
+Patch size:          768
+Patch stride:        512
+Prompt:              a detailed realistic photograph, natural textures, clear facial features, balanced photographic sharpness
 ```
 
 Use for:
@@ -167,9 +171,10 @@ This is the recommended default HYPIR preset.
 ### Enhanced
 
 ```text
-Patch size:   512
-Patch stride: 256
-Prompt:       a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing
+Restoration strength: 1.00
+Patch size:          512
+Patch stride:        256
+Prompt:              a highly detailed professional photograph, sharp facial features, clear fine textures, crisp hair, detailed clothing
 ```
 
 Use for:
@@ -180,24 +185,59 @@ Use for:
 * Images where perceived detail matters more than strict fidelity
 * Cases where the user accepts a substantially longer processing time
 
-The Enhanced preset uses 50 percent overlap in both dimensions. Interior image regions may be processed by multiple overlapping patches, so this preset can be dramatically slower than Natural or Balanced.
+The Enhanced preset uses the full HYPIR-generated high-frequency result without blending source high-frequency detail back into the image.
 
-The Enhanced prompt may encourage HYPIR to reconstruct plausible details that were not clearly present in the source. Faces, text, clothing patterns, hair, architecture, and other identity-sensitive details should be reviewed closely.
+It also uses 50 percent overlap in both dimensions. Interior image regions may be processed by multiple overlapping patches, so this preset can be dramatically slower than Natural or Balanced.
+
+The Enhanced preset may reconstruct plausible details that were not clearly present in the source. Faces, text, clothing patterns, hair, architecture, and other identity-sensitive details should be reviewed closely.
 
 ### Custom HYPIR settings
 
 The app may also provide a `custom` preset that exposes:
 
-| Setting      | Supported values                                         | Default                |
-| ------------ | -------------------------------------------------------- | ---------------------- |
-| Patch size   | `512` to `1024`, in increments of `128`                  | `768`                  |
-| Patch stride | `256` to the selected patch size, in increments of `128` | `512`                  |
-| Prompt       | User-provided text                                       | Balanced preset prompt |
+| Setting              | Supported values                                         | Default                |
+| -------------------- | -------------------------------------------------------- | ---------------------- |
+| Restoration strength | `0.00` to `1.00`                                         | `0.70`                 |
+| Patch size           | `512` to `1024`, in increments of `128`                  | `768`                  |
+| Patch stride         | `256` to the selected patch size, in increments of `128` | `512`                  |
+| Prompt               | User-provided text                                       | Balanced preset prompt |
 
-The variation seed remains independently configurable and should not be reset when the user changes the HYPIR preset, patch configuration, or prompt.
+The variation seed remains independently configurable and should not be reset when the user changes restoration strength, the HYPIR preset, patch configuration, or prompt.
+
+#### Restoration strength behavior
+
+| Strength | Behavior                                                                                          |
+| -------: | ------------------------------------------------------------------------------------------------- |
+|   `0.00` | Uses the source image's high-frequency detail without HYPIR-generated high-frequency enhancement. |
+|   `0.25` | Very conservative restoration that remains close to the source.                                   |
+|   `0.45` | Natural restoration with restrained generated detail.                                             |
+|   `0.70` | Balanced restoration and recommended default.                                                     |
+|   `1.00` | Uses the full HYPIR-generated high-frequency detail result.                                       |
+
+Restoration strength should be implemented by blending source and generated high-frequency components while retaining the source image's low-frequency structure:
+
+```text
+Output =
+  Source low frequencies
+  + mix(
+      Source high frequencies,
+      HYPIR high frequencies,
+      Restoration strength
+    )
+```
+
+The interface should explain that restoration strength is a blend control rather than a model quality setting:
+
+* Lower values preserve more source texture and reduce hallucinated detail.
+* Higher values use more HYPIR-generated texture and reconstruction.
+* Increasing strength does not guarantee a better or sharper result.
+* Strength does not affect the variation seed.
+* Strength does not reduce the cost of HYPIR inference because the complete HYPIR result must still be generated before blending.
+* A strength of `0.00` is primarily useful for comparison and normally provides little reason to run HYPIR.
 
 The interface should validate the following:
 
+* Restoration strength must remain between `0.00` and `1.00`.
 * Patch stride must not be greater than patch size.
 * Patch size and stride must use values supported by the HYPIR adapter.
 * Smaller stride values create more overlap and substantially increase processing time.
@@ -205,7 +245,7 @@ The interface should validate the following:
 * Larger stride values reduce the number of tiled model calls but can increase the risk of visible seams.
 * The prompt should describe the desired photographic result rather than provide editing commands.
 * Strong prompt terms may increase reconstructed detail but can reduce source fidelity.
-* Changing the seed selects a different variation. It does not make the prompt stronger or weaker.
+* Changing the seed selects a different variation. It does not make the prompt or restoration strength stronger or weaker.
 
 Suggested prompt guidance:
 
@@ -341,10 +381,17 @@ The interface should explain that fidelity weight is a trade-off rather than a s
 * `maximum-experimental` uses the open-source HYPIR-SD2 model, which is initialized from Stable Diffusion 2.1 and performs restoration using a single forward pass rather than iterative diffusion sampling.
 * The HYPIR presets are `natural`, `balanced`, `enhanced`, and `custom`.
 * The default HYPIR preset is `balanced`.
-* HYPIR preset settings should be persisted independently from the variation seed and requested output dimensions.
+* HYPIR restoration strength is a Vivid-specific high-frequency blend control rather than an official HYPIR model argument.
+* HYPIR restoration strength must remain between `0.00` and `1.00`.
+* The default HYPIR restoration strength is `0.70`.
+* The `natural`, `balanced`, and `enhanced` presets use restoration strengths of `0.45`, `0.70`, and `1.00`, respectively.
+* Vivid should retain the source image's low-frequency structure and blend between source and HYPIR-generated high-frequency detail using the selected restoration strength.
+* Changing HYPIR restoration strength does not avoid or shorten inference because Vivid must generate the complete HYPIR result before blending.
+* HYPIR preset settings should be persisted independently from the restoration strength, variation seed, and requested output dimensions.
+* HYPIR restoration strength should be persisted independently from the prompt, patch settings, variation seed, and requested output dimensions.
 * The HYPIR prompt controls the desired photographic content and texture style. Patch size and stride control tiling behavior rather than generative strength.
-* The named HYPIR presets provide fixed prompt, patch-size, and stride values.
-* The `custom` HYPIR preset exposes prompt, patch size, and patch stride.
+* The named HYPIR presets provide fixed restoration-strength, prompt, patch-size, and stride values.
+* The `custom` HYPIR preset exposes restoration strength, prompt, patch size, and patch stride.
 * HYPIR patch size must remain between `512` and `1024`.
 * HYPIR patch stride must remain between `256` and the selected patch size.
 * A smaller HYPIR stride creates more overlap, more tiled inference calls, and longer processing times.
@@ -353,8 +400,8 @@ The interface should explain that fidelity weight is a trade-off rather than a s
 * HYPIR presets must not change the user's selected variation seed unless the user explicitly requests a new variation.
 * Vivid runs HYPIR directly at the requested output dimensions instead of generating a fixed 4x intermediate.
 * HYPIR retains its BF16 inference dtype on MPS for output correctness.
-* When a named HYPIR preset is active, its patch size and stride override the generic `--tile` overlap mapping.
-* When the `custom` HYPIR preset is active, Vivid passes the selected patch size, patch stride, and prompt directly to the HYPIR adapter.
+* When a named HYPIR preset is active, its restoration strength, patch size, stride, and prompt override the corresponding custom values.
+* When the `custom` HYPIR preset is active, Vivid passes the selected patch size, patch stride, and prompt directly to the HYPIR adapter, then applies the selected restoration strength during final wavelet reconstruction.
 * The generic `--tile` mapping applies only when no explicit HYPIR preset configuration is provided.
 * The original `stabilityai/stable-diffusion-2-1-base` repository referenced by HYPIR is no longer public. Vivid installs the required FP16 Diffusers components from the commit-pinned `sd2-community/stable-diffusion-2-1-base` mirror and runs HYPIR from that local snapshot.
 * HYPIR supports generative restoration, adjustable texture richness, optional text-guided control, and variation seeds. It may reconstruct plausible detail that was not present in the original image, so results should be treated as experimental when facial identity, text, or documentary accuracy matters.
@@ -387,7 +434,7 @@ Input image
 * Catalog and app-facing descriptions: [`Sources/VividUpscaler/Models/ModelInfo.swift`](Sources/VividUpscaler/Models/ModelInfo.swift)
 * Mode titles, details, experimental labeling, and minimum-RAM policy: [`Sources/VividUpscaler/Models/UpscaleOptions.swift`](Sources/VividUpscaler/Models/UpscaleOptions.swift)
 * SeedVR2 presets and advanced restoration controls: [`Sources/VividUpscaler/Models/SeedVR2Options.swift`](Sources/VividUpscaler/Models/SeedVR2Options.swift)
-* HYPIR presets, prompt, and tiling controls: [`Sources/VividUpscaler/Models/HYPIROptions.swift`](Sources/VividUpscaler/Models/HYPIROptions.swift)
+* HYPIR presets, restoration strength, prompt, and tiling controls: [`Sources/VividUpscaler/Models/HYPIROptions.swift`](Sources/VividUpscaler/Models/HYPIROptions.swift)
 * Variation-seed support and persistence: [`Sources/VividUpscaler/Models/GenerativeOptions.swift`](Sources/VividUpscaler/Models/GenerativeOptions.swift)
 * Deblur choices and preprocessing configuration: [`Sources/VividUpscaler/Models/DeblurOptions.swift`](Sources/VividUpscaler/Models/DeblurOptions.swift)
 * CodeFormer presets and face-restoration configuration: [`Sources/VividUpscaler/Models/CodeFormerOptions.swift`](Sources/VividUpscaler/Models/CodeFormerOptions.swift)

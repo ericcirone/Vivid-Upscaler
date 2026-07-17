@@ -45,14 +45,16 @@ awk '/^cat > "\$INSTALL_ROOT\/vivid_seedvr2.py" <<'\''PY'\''$/ { copying=1; next
   "$ROOT_DIR/install.sh" > "$CLI_RESOURCES/vivid_seedvr2.py"
 awk '/^cat > "\$INSTALL_ROOT\/vivid_codeformer.py" <<'\''PY'\''$/ { copying=1; next } copying && /^PY$/ { exit } copying' \
   "$ROOT_DIR/install.sh" > "$CLI_RESOURCES/vivid_codeformer.py"
+awk '/^cat > "\$INSTALL_ROOT\/vivid_hypir_blend.py" <<'\''PY'\''$/ { copying=1; next } copying && /^PY$/ { exit } copying' \
+  "$ROOT_DIR/install.sh" > "$CLI_RESOURCES/vivid_hypir_blend.py"
 awk '/^cat > "\$BIN_DIR\/vvd" <<'\''WRAPPER'\''$/ { copying=1; next } copying && /^WRAPPER$/ { exit } copying' \
   "$ROOT_DIR/install.sh" > "$CLI_RESOURCES/vvd"
 cp "$ROOT_DIR/install.sh" "$CLI_RESOURCES/install.sh"
-[[ -s "$CLI_RESOURCES/vvd" && -s "$CLI_RESOURCES/vivid_upscale.py" && -s "$CLI_RESOURCES/vivid_seedvr2.py" && -s "$CLI_RESOURCES/vivid_codeformer.py" ]] || {
+[[ -s "$CLI_RESOURCES/vvd" && -s "$CLI_RESOURCES/vivid_upscale.py" && -s "$CLI_RESOURCES/vivid_seedvr2.py" && -s "$CLI_RESOURCES/vivid_codeformer.py" && -s "$CLI_RESOURCES/vivid_hypir_blend.py" ]] || {
   echo "Failed to extract the shared CLI payload from install.sh" >&2
   exit 1
 }
-chmod +x "$CLI_RESOURCES/vvd" "$CLI_RESOURCES/vivid_upscale.py" "$CLI_RESOURCES/vivid_seedvr2.py" "$CLI_RESOURCES/vivid_codeformer.py" "$CLI_RESOURCES/install.sh"
+chmod +x "$CLI_RESOURCES/vvd" "$CLI_RESOURCES/vivid_upscale.py" "$CLI_RESOURCES/vivid_seedvr2.py" "$CLI_RESOURCES/vivid_codeformer.py" "$CLI_RESOURCES/vivid_hypir_blend.py" "$CLI_RESOURCES/install.sh"
 
 # Compile the Icon Composer source directly. Keep vivid-icon.icon as the source
 # of truth instead of generating or maintaining a traditional icon set.
