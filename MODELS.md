@@ -2,16 +2,17 @@
 
 This is the definitive model reference for the app. The catalog below mirrors `ModelInfo.choices` in [`Sources/VividUpscaler/Models/ModelInfo.swift`](Sources/VividUpscaler/Models/ModelInfo.swift), including the wording shown in the model manager. RAM values are the app's install-eligibility and usage guidance in GB.
 
-| Mode                   | Model used by the app                       | Backend                   | Accepts seed | Minimum RAM | Recommended RAM | Large-image RAM | Source URL                                                                                   | Description used in the app                                                                                                                                    |
-| ---------------------- | ------------------------------------------- | ------------------------- | :----------: | ----------: | --------------: | --------------: | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fast`                 | `mlx-community/Real-ESRGAN-general-x4v3`    | MLX                       |      No      |        8 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/mlx-community/Real-ESRGAN-general-x4v3)          | Quickest option: a compact native FP16 MLX upscaler for Apple Silicon.                                                                                         |
-| `normal`               | `mlx-community/Real-ESRGAN-x4plus`          | MLX                       |      No      |       16 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/mlx-community/Real-ESRGAN-x4plus)                | The main quality and speed balance with a more powerful conventional single-pass upscaler.                                                                     |
-| `normal-hq`            | `4xNomosWebPhoto_esrgan`                    | PyTorch MPS via Spandrel  |      No      |       16 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/Phips/4xNomosWebPhoto_esrgan)                    | Fast photographic restoration trained for compression, lens blur, noise, and Web/JPEG sources.                                                                 |
-| `advanced`             | `SeedVR2 3B 8-bit`                          | Native MLX                |      Yes     |       16 GB |           24 GB |           32 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Difficult restoration jobs where a longer wait is acceptable, using the 3B model at 8-bit precision.                                                           |
-| `maximum`              | `SeedVR2 3B source precision`               | Native MLX                |      Yes     |       24 GB |           32 GB |           48 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Highest-quality, slowest SeedVR2 option using the 3B model at source precision.                                                                                |
-| `maximum-experimental` | `HYPIR-SD2`                                 | PyTorch MPS, experimental |      Yes     |       24 GB |           32 GB |           48 GB | [Official HYPIR model files](https://huggingface.co/lxq007/HYPIR)                            | Maximum-tier experimental generative restoration using a single-pass diffusion-derived model for strong detail reconstruction and adjustable texture richness. |
-| `deblur-motion`        | `Restormer Motion Deblurring`               | PyTorch MPS               |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Removes camera shake, subject movement, and directional motion blur while preserving the original image dimensions.                                            |
-| `deblur-defocus`       | `Restormer Single-Image Defocus Deblurring` | PyTorch MPS               |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Reduces out-of-focus and lens-related blur while preserving the original image dimensions.                                                                     |
+| Mode                   | Model used by the app                       | Backend                       | Accepts seed | Minimum RAM | Recommended RAM | Large-image RAM | Source URL                                                                                   | Description used in the app                                                                                                                                    |
+| ---------------------- | ------------------------------------------- | ----------------------------- | :----------: | ----------: | --------------: | --------------: | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fast`                 | `mlx-community/Real-ESRGAN-general-x4v3`    | MLX                           |      No      |        8 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/mlx-community/Real-ESRGAN-general-x4v3)          | Quickest option: a compact native FP16 MLX upscaler for Apple Silicon.                                                                                         |
+| `normal`               | `mlx-community/Real-ESRGAN-x4plus`          | MLX                           |      No      |       16 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/mlx-community/Real-ESRGAN-x4plus)                | The main quality and speed balance with a more powerful conventional single-pass upscaler.                                                                     |
+| `normal-hq`            | `4xNomosWebPhoto_esrgan`                    | PyTorch MPS via Spandrel      |      No      |       16 GB |           16 GB |           24 GB | [Hugging Face model](https://huggingface.co/Phips/4xNomosWebPhoto_esrgan)                    | Fast photographic restoration trained for compression, lens blur, noise, and Web/JPEG sources.                                                                 |
+| `advanced`             | `SeedVR2 3B 8-bit`                          | Native MLX                    |      Yes     |       16 GB |           24 GB |           32 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Difficult restoration jobs where a longer wait is acceptable, using the 3B model at 8-bit precision.                                                           |
+| `maximum`              | `SeedVR2 3B source precision`               | Native MLX                    |      Yes     |       24 GB |           32 GB |           48 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Highest-quality, slowest SeedVR2 option using the 3B model at source precision.                                                                                |
+| `maximum-experimental` | `HYPIR-SD2`                                 | PyTorch MPS, experimental     |      Yes     |       24 GB |           32 GB |           48 GB | [Official HYPIR model files](https://huggingface.co/lxq007/HYPIR)                            | Maximum-tier experimental generative restoration using a single-pass diffusion-derived model for strong detail reconstruction and adjustable texture richness. |
+| `deblur-motion`        | `Restormer Motion Deblurring`               | PyTorch MPS                   |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Removes camera shake, subject movement, and directional motion blur while preserving the original image dimensions.                                            |
+| `deblur-defocus`       | `Restormer Single-Image Defocus Deblurring` | PyTorch MPS                   |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Reduces out-of-focus and lens-related blur while preserving the original image dimensions.                                                                     |
+| `face-restore`         | `CodeFormer v0.1.0`                         | PyTorch MPS via Vivid adapter |      No      |        8 GB |           16 GB |           24 GB | [Official CodeFormer repository](https://github.com/sczhou/CodeFormer)                       | Restores detected faces with an adjustable balance between stronger reconstruction and closer identity preservation.                                           |
 
 ## Seed support
 
@@ -108,17 +109,108 @@ The app may also provide a `custom` preset that exposes:
 
 The interface should warn users that increasing either noise value does not simply increase quality. Noise settings alter how the model reconstructs the image and may reduce fidelity.
 
+## CodeFormer face-restoration presets
+
+CodeFormer is an optional preprocessor that restores detected faces before the selected Vivid upscaling mode runs.
+
+CodeFormer uses a fidelity weight from `0.0` to `1.0`. Lower values favor stronger reconstruction and cleaner-looking facial detail. Higher values favor closer identity preservation and greater similarity to the source.
+
+The default CodeFormer preset is `balanced`.
+
+| Preset     | Fidelity weight | Description                                                                                           |
+| ---------- | --------------: | ----------------------------------------------------------------------------------------------------- |
+| `enhance`  |           `0.4` | Applies stronger facial reconstruction for heavily degraded, blurry, compressed, or very small faces. |
+| `balanced` |           `0.7` | Balances facial cleanup with identity preservation. Recommended as the default.                       |
+| `faithful` |           `0.9` | Prioritizes resemblance to the original face and applies more conservative restoration.               |
+
+### Enhance
+
+```text
+Fidelity weight: 0.4
+```
+
+Use for:
+
+* Very blurry or heavily compressed faces
+* Small faces with little usable detail
+* Damaged or low-resolution old photographs
+* Images where a cleaner result matters more than exact facial fidelity
+
+This preset may reconstruct facial details that were not clearly present in the source. Eye shape, skin texture, teeth, hairlines, and other identity-sensitive features should be reviewed closely.
+
+### Balanced
+
+```text
+Fidelity weight: 0.7
+```
+
+Use for:
+
+* General face restoration
+* Family photographs
+* Moderate blur or compression
+* Faces that need cleanup without aggressive reconstruction
+
+This is the recommended default because it provides a practical balance between perceived quality and identity preservation.
+
+### Faithful
+
+```text
+Fidelity weight: 0.9
+```
+
+Use for:
+
+* Identity-sensitive photographs
+* Faces that are already reasonably clear
+* Subtle cleanup of compression or softness
+* Images where resemblance matters more than maximum sharpness
+
+This preset is more conservative and may leave some blur, noise, or degradation visible.
+
+### Custom CodeFormer settings
+
+The app may also provide a `custom` preset that exposes:
+
+| Setting         | Suggested range | Default |
+| --------------- | --------------: | ------: |
+| Fidelity weight |  `0.0` to `1.0` |   `0.7` |
+
+The interface should explain that fidelity weight is a trade-off rather than a simple strength slider:
+
+* Lower values produce stronger reconstruction and may change facial identity.
+* Higher values preserve more source identity but may retain visible degradation.
+* A value of `1.0` does not disable processing.
+* A value of `0.0` does not guarantee the highest-quality or most accurate face.
+
 ## Implementation notes
 
-* The catalog contains six upscaling modes and two optional deblur processors.
+* The catalog contains six upscaling modes and three optional preprocessors.
 * The six upscaling entries cover every `UpscaleMode` case: `fast`, `normal`, `normal-hq`, `advanced`, `maximum`, and `maximum-experimental`.
-* `deblur-motion` and `deblur-defocus` are preprocessing operations rather than additional upscale modes. They restore the image at its existing dimensions before the selected upscaling model runs.
+* The three preprocessing entries are `deblur-motion`, `deblur-defocus`, and `face-restore`.
+* `deblur-motion`, `deblur-defocus`, and `face-restore` are preprocessing operations rather than additional upscale modes. They preserve the full image dimensions before the selected upscaling model runs.
 * Restormer provides separate pretrained tasks for single-image motion deblurring and single-image defocus deblurring. The app should not use the dual-pixel defocus checkpoint because ordinary imported photographs do not provide the paired dual-pixel input it requires.
 * `deblur-motion` is intended for camera movement, subject movement, and directional smearing.
 * `deblur-defocus` is intended for images that are uniformly or locally out of focus.
 * The Restormer RAM values are Vivid's conservative app guidance for full-resolution PyTorch MPS processing. They are not official upstream system requirements.
 * Restormer checkpoints are approximately 100 MB each, but processing memory is primarily determined by image dimensions, intermediate activations, and whether tiling is enabled.
-* `fast`, `normal`, `normal-hq`, `deblur-motion`, and `deblur-defocus` are deterministic and do not expose a variation seed.
+* `face-restore` detects faces, aligns and crops each detected face, restores it with CodeFormer, and blends the restored result back into the original image.
+* CodeFormer internally processes aligned face crops at its expected face resolution. The preprocessor should still return an image with the same full dimensions as its input.
+* CodeFormer should restore detected face regions only. Vivid should not enable CodeFormer's optional Real-ESRGAN background enhancement because the selected Vivid upscaling mode runs later in the pipeline.
+* Vivid should not enable CodeFormer's optional Real-ESRGAN face upsampling by default. CodeFormer should restore the face at preprocessing time, while the selected Vivid model controls final image enlargement.
+* CodeFormer fidelity weight must remain between `0.0` and `1.0`.
+* Smaller CodeFormer fidelity values favor stronger reconstruction and perceived quality. Larger values favor closer fidelity to the source face.
+* The default CodeFormer preset is `balanced`, with a fidelity weight of `0.7`.
+* CodeFormer preset settings should be persisted independently from the selected upscale mode.
+* CodeFormer is deterministic and does not expose a variation seed.
+* CodeFormer should be disabled by default and enabled explicitly by the user.
+* The app should warn that CodeFormer may alter identity-sensitive facial details, especially with the `enhance` preset.
+* When multiple faces are detected, the selected CodeFormer preset should be applied consistently to every face unless per-face controls are introduced later.
+* If no face is detected, the preprocessor should leave the image unchanged and clearly report that no eligible faces were found.
+* If a face is extremely small, heavily occluded, or only partially visible, the app should avoid presenting the restored result as an accurate recovery of the original person.
+* CodeFormer officially documents CUDA-oriented inference. The `PyTorch MPS via Vivid adapter` backend represents Vivid-specific Apple Silicon integration and should be tested across supported Mac configurations.
+* CodeFormer uses the NTU S-Lab License 1.0. Redistribution and commercial use must be reviewed before the model or its code is bundled with Vivid.
+* `fast`, `normal`, `normal-hq`, `deblur-motion`, `deblur-defocus`, and `face-restore` are deterministic and do not expose a variation seed.
 * `advanced`, `maximum`, and `maximum-experimental` accept a variation seed.
 * A higher or lower variation seed does not represent stronger processing or better quality. Different values select different repeatable generative variations.
 * `advanced` and `maximum` use the same SeedVR2 3B source weights. Advanced loads them at 8-bit precision; Maximum keeps source precision.
@@ -135,8 +227,10 @@ The interface should warn users that increasing either noise value does not simp
 * The installer downloads the model files from the URLs and paths defined in [`install.sh`](install.sh). The MLX model pages are the source repositories for the two Real-ESRGAN variants; the installer uses their `resolve/main` files.
 * RAM compatibility is enforced using the minimum value: a model is installable when detected system RAM is greater than or equal to its minimum requirement.
 * The app's default tiling value for every upscale and deblur model is `auto`; tiling can reduce memory pressure for larger inputs.
+* CodeFormer processes individual detected face crops and does not use the general image tiling setting.
 * When automatic deblur detection is unavailable or uncertain, the app should let the user choose between Motion Blur and Out of Focus rather than silently applying the wrong checkpoint.
-* Deblurring should run before upscaling so the upscale model receives cleaner edges and more coherent source detail.
+* Global deblurring should run before CodeFormer so that the face-restoration model receives cleaner face crops.
+* CodeFormer should run before the selected Vivid upscale mode because it is defined as a preprocessor.
 * HYPIR should remain opt-in and should not silently replace the regular `maximum` SeedVR2 mode.
 
 ## Suggested processing order
@@ -144,6 +238,7 @@ The interface should warn users that increasing either noise value does not simp
 ```text
 Input image
   -> Optional Restormer deblur
+  -> Optional CodeFormer face restoration
   -> Selected Vivid upscale mode
   -> Apply model-specific variation and restoration settings
   -> Resize to requested dimensions
@@ -157,5 +252,7 @@ Input image
 * SeedVR2 presets and advanced restoration controls: [`Sources/VividUpscaler/Models/SeedVR2Options.swift`](Sources/VividUpscaler/Models/SeedVR2Options.swift)
 * Variation-seed support and persistence: [`Sources/VividUpscaler/Models/GenerativeOptions.swift`](Sources/VividUpscaler/Models/GenerativeOptions.swift)
 * Deblur choices and preprocessing configuration: [`Sources/VividUpscaler/Models/DeblurOptions.swift`](Sources/VividUpscaler/Models/DeblurOptions.swift)
+* CodeFormer presets and face-restoration configuration: [`Sources/VividUpscaler/Models/CodeFormerOptions.swift`](Sources/VividUpscaler/Models/CodeFormerOptions.swift)
+* Preprocessor ordering and composition: [`Sources/VividUpscaler/Processing/PreprocessingPipeline.swift`](Sources/VividUpscaler/Processing/PreprocessingPipeline.swift)
 * Download sources, licensing notices, and model file layout: [`install.sh`](install.sh)
 * Catalog regression tests: [`Tests/VividUpscalerTests/ModelCatalogTests.swift`](Tests/VividUpscalerTests/ModelCatalogTests.swift)

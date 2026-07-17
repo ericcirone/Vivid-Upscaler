@@ -6,7 +6,7 @@ import Testing
 struct ModelCatalogTests {
     @Test("Catalog exposes every processing mode")
     func exposesEveryMode() {
-        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum", "maximum-experimental", "deblur-motion", "deblur-defocus"])
+        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum", "maximum-experimental", "deblur-motion", "deblur-defocus", "face-restore"])
         #expect(Set(ModelInfo.choices.compactMap(\.mode)) == Set(UpscaleMode.allCases))
         #expect(Set(ModelInfo.choices.compactMap(\.deblurMode)) == Set([DeblurMode.motion, DeblurMode.defocus]))
     }
@@ -22,6 +22,7 @@ struct ModelCatalogTests {
         #expect(requirements["maximum-experimental"] == 24)
         #expect(requirements["deblur-motion"] == 16)
         #expect(requirements["deblur-defocus"] == 16)
+        #expect(requirements["face-restore"] == 8)
     }
 
     @Test("Catalog uses the requested model and backend mapping")
@@ -46,6 +47,8 @@ struct ModelCatalogTests {
         #expect(catalog["deblur-motion"]?.1 == "PyTorch MPS")
         #expect(catalog["deblur-defocus"]?.0 == "Restormer Single-Image Defocus Deblurring")
         #expect(catalog["deblur-defocus"]?.1 == "PyTorch MPS")
+        #expect(catalog["face-restore"]?.0 == "CodeFormer v0.1.0")
+        #expect(catalog["face-restore"]?.1 == "PyTorch MPS via Vivid adapter")
     }
 
     @Test("Generative and SeedVR2 capabilities match the model contract")
@@ -58,12 +61,26 @@ struct ModelCatalogTests {
         #expect(SeedVR2Options(preset: .custom, customInputNoiseScale: -1, customLatentNoiseScale: 2).resolvedSettings == .init(inputNoiseScale: 0, latentNoiseScale: 1, colorCorrection: .lab))
     }
 
+    @Test("CodeFormer presets clamp custom fidelity and preprocessing order is stable")
+    func codeFormerContract() {
+        #expect(CodeFormerPreset.enhance.fidelityWeight == 0.4)
+        #expect(CodeFormerPreset.balanced.fidelityWeight == 0.7)
+        #expect(CodeFormerPreset.faithful.fidelityWeight == 0.9)
+        #expect(CodeFormerOptions(isEnabled: true, preset: .custom, customFidelityWeight: -1).resolvedFidelityWeight == 0)
+        #expect(CodeFormerOptions(isEnabled: true, preset: .custom, customFidelityWeight: 2).resolvedFidelityWeight == 1)
+
+        let faceOptions = CodeFormerOptions(isEnabled: true, preset: .balanced)
+        let pipeline = PreprocessingPipeline(deblurMode: .motion, codeFormerOptions: faceOptions)
+        #expect(pipeline.steps == [.deblur(.motion), .faceRestore(faceOptions)])
+    }
+
     @Test("App options forward variation and restoration settings to the CLI")
     func cliRestorationArguments() {
         let input = URL(fileURLWithPath: "/tmp/input.png")
         let output = URL(fileURLWithPath: "/tmp/output.png")
         let options = UpscaleOptions(
             mode: .advanced,
+            codeFormerOptions: .init(isEnabled: true, preset: .faithful),
             generativeOptions: .init(variationSeed: 123),
             seedVR2Options: .init(preset: .softerDetail),
             sizingKind: .scale,
@@ -83,6 +100,9 @@ struct ModelCatalogTests {
         #expect(containsPair("--input-noise-scale", "0.0"))
         #expect(containsPair("--latent-noise-scale", "0.08"))
         #expect(containsPair("--color-correction", "wavelet"))
+        #expect(arguments.contains("--face-restore"))
+        #expect(containsPair("--codeformer-preset", "faithful"))
+        #expect(containsPair("--codeformer-fidelity", "0.9"))
     }
 
     @Test("Models below the machine RAM threshold are rejected")
@@ -124,13 +144,15 @@ struct ModelCatalogTests {
     @MainActor
     func removedSelectionsFallBackToDownloadedChoices() {
         let store = UpscaleStore(systemMemoryBytes: 32 * 1_073_741_824)
-        store.installedModelIDs = ["fast", "normal", "deblur-motion"]
+        store.installedModelIDs = ["fast", "normal", "deblur-motion", "face-restore"]
         store.mode = .normal
         store.deblurMode = .motion
+        store.faceRestoreEnabled = true
 
         store.installedModelIDs = ["fast"]
 
         #expect(store.mode == .fast)
         #expect(store.deblurMode == .none)
+        #expect(!store.faceRestoreEnabled)
     }
 }

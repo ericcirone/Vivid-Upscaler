@@ -27,6 +27,40 @@ struct OptionsView: View {
                 }
             }
 
+            Section("Face Restoration") {
+                Toggle("Restore detected faces", isOn: $store.faceRestoreEnabled)
+                    .disabled(!store.isFaceRestoreInstalled)
+                if store.isFaceRestoreInstalled {
+                    Picker("Preset", selection: $store.codeFormerPreset) {
+                        ForEach(CodeFormerPreset.allCases) { preset in
+                            Text(preset.title).tag(preset)
+                        }
+                    }
+                    Text(store.codeFormerPreset.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if store.codeFormerPreset == .custom {
+                        LabeledContent("Fidelity weight") {
+                            Text(store.codeFormerFidelityWeight, format: .number.precision(.fractionLength(2)))
+                                .monospacedDigit()
+                        }
+                        Slider(value: $store.codeFormerFidelityWeight, in: 0...1, step: 0.01)
+                    }
+                    Text("Runs after deblur and before upscaling. Lower fidelity values reconstruct more strongly; higher values preserve more source identity.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if store.faceRestoreEnabled {
+                        Text("Review identity-sensitive details carefully. Face restoration can change eyes, teeth, skin texture, and other features.")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                } else {
+                    Text("Install Face Restore in the model manager to enable CodeFormer.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Mode") {
                 Picker("Mode", selection: $store.mode) {
                     ForEach(store.installedUpscaleModes) { mode in

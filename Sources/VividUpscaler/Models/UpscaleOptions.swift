@@ -108,6 +108,7 @@ enum OutputQualityPreset: Int, CaseIterable, Identifiable {
 struct UpscaleOptions {
     var mode: UpscaleMode
     var deblurMode: DeblurMode = .none
+    var codeFormerOptions: CodeFormerOptions = .init()
     var generativeOptions: GenerativeOptions = .init()
     var seedVR2Options: SeedVR2Options = .init()
     var sizingKind: SizingKind
@@ -116,6 +117,10 @@ struct UpscaleOptions {
     var maxResolution: Int
     var format: OutputFormat
     var quality: Double
+
+    var preprocessingPipeline: PreprocessingPipeline {
+        PreprocessingPipeline(deblurMode: deblurMode, codeFormerOptions: codeFormerOptions)
+    }
 
     var sizingToken: String {
         switch sizingKind {
@@ -130,7 +135,8 @@ struct UpscaleOptions {
     func outputURL(for inputURL: URL) -> URL {
         let ext = format.fileExtension(for: inputURL)
         let deblurToken = deblurMode == .none ? "" : "-\(deblurMode.rawValue)"
-        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)\(deblurToken)-\(sizingToken).\(ext)"
+        let faceRestoreToken = codeFormerOptions.isEnabled ? "-face-restore" : ""
+        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)\(deblurToken)\(faceRestoreToken)-\(sizingToken).\(ext)"
         return inputURL.deletingLastPathComponent().appendingPathComponent(filename)
     }
 }

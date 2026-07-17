@@ -95,6 +95,11 @@ actor VividCLI {
     static func upscaleArguments(input: URL, output: URL, options: UpscaleOptions) -> [String] {
         var arguments = [input.path, output.path, "--mode", options.mode.rawValue]
         arguments += ["--deblur", options.deblurMode.rawValue]
+        if options.codeFormerOptions.isEnabled {
+            arguments += ["--face-restore"]
+            arguments += ["--codeformer-preset", options.codeFormerOptions.preset.rawValue]
+            arguments += ["--codeformer-fidelity", String(options.codeFormerOptions.resolvedFidelityWeight)]
+        }
         if options.mode.supportsVariationSeed {
             arguments += ["--seed", String(options.generativeOptions.variationSeed)]
         }
@@ -171,7 +176,8 @@ actor VividCLI {
         return FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("venv/bin/python").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_upscale.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
-            && version == "20"
+            && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_codeformer.py").path)
+            && version == "22"
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {

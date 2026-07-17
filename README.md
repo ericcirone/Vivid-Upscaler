@@ -77,6 +77,7 @@ vvd input.jpg output.jpg --scale 2
 vvd input.jpg output.png --mode fast --scale 4
 vvd input.jpg output.webp --mode normal-hq --resolution 2048
 vvd input.jpg output.png --mode normal --deblur deblur-motion --scale 2
+vvd portrait.jpg restored.png --mode normal --face-restore --codeformer-preset balanced --scale 2
 vvd input.jpg output.jxl --mode advanced --scale 2 --quality 90 --seed 42
 vvd input.jpg output.png --mode maximum --tile on
 vvd input.jpg output.png --mode maximum --seedvr2-preset softer-detail --seed 123
@@ -85,6 +86,7 @@ vvd models status
 vvd models status --json
 vvd models install normal
 vvd models install deblur-motion
+vvd models install face-restore
 vvd models delete normal
 ```
 
@@ -94,6 +96,9 @@ Run `vvd --help` for the complete option list. The main options are:
 | --- | --- |
 | `--mode MODE` | `fast`, `normal`, `normal-hq`, `advanced`, `maximum`, or `maximum-experimental`; default is `normal` |
 | `--deblur MODE` | Optional `deblur-motion` or `deblur-defocus` Restormer pass before upscaling; default is `none` |
+| `--face-restore` | Restore detected faces with CodeFormer after deblur and before upscaling; disabled by default |
+| `--codeformer-preset PRESET` | `enhance`, `balanced`, `faithful`, or `custom`; default is `balanced` |
+| `--codeformer-fidelity N` | Custom CodeFormer fidelity weight from 0 to 1; default is 0.7 |
 | `--scale N` | Multiply both source dimensions by `N` |
 | `--resolution N` | Target the short edge in pixels; default is 2048 |
 | `--max-resolution N` | Cap the long edge in pixels; default is 4096 |
@@ -121,12 +126,15 @@ A bare output filename is saved beside the input file. Include a slash, such as 
 | `maximum-experimental` | HYPIR-SD2 | PyTorch MPS, experimental | 24 GB | 32 GB | 48 GB | Maximum-tier opt-in generative restoration with strong detail reconstruction and adjustable texture richness |
 | `deblur-motion` | Restormer Motion Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Camera shake, subject movement, and directional motion blur |
 | `deblur-defocus` | Restormer Single-Image Defocus Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Out-of-focus and lens-related blur |
+| `face-restore` | CodeFormer v0.1.0 | PyTorch MPS via Vivid adapter | 8 GB | 16 GB | 24 GB | Detected-face restoration with an adjustable reconstruction/fidelity trade-off |
 
 SeedVR2 is intentionally limited to the 3B model. Advanced quantizes it to 8-bit at load time; Maximum keeps the source precision.
 
 Maximum Experimental is an opt-in HYPIR-SD2 path. It may reconstruct plausible detail that was not present in the source, so avoid it for facial identity, text, or documentary-critical work. The official HYPIR implementation documents CUDA rather than Apple Silicon MPS; Vivid's MPS integration remains experimental. HYPIR's official repository also restricts commercial use without separate permission, even though its model repository displays an Apache 2.0 label; review and follow the more restrictive terms before enabling it in a commercial product.
 
-The two Restormer entries are optional preprocessors, not upscale modes. Choose Motion Blur or Out of Focus in the app; Vivid does not guess when the blur type is uncertain. Deblurring preserves the source dimensions and runs before the selected upscale mode.
+The two Restormer entries and CodeFormer are optional preprocessors, not upscale modes. Choose Motion Blur or Out of Focus in the app; Vivid does not guess when the blur type is uncertain. Processing order is deblur, then face restoration, then the selected upscale mode. Each preprocessor preserves the full image dimensions.
+
+CodeFormer is disabled by default. Its Balanced preset uses a fidelity weight of 0.7; Enhance uses 0.4 for stronger reconstruction, while Faithful uses 0.9 for closer identity preservation. If no eligible face is detected, Vivid leaves the image unchanged before upscaling. Review identity-sensitive details carefully. CodeFormer uses the NTU S-Lab License 1.0, so review its redistribution and commercial-use terms before shipping it in a product.
 
 ### Tiling
 

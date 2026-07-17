@@ -115,6 +115,11 @@ struct ModelOnboardingView: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
+                if model.isFaceRestore {
+                    Text("May alter identity-sensitive facial details. CodeFormer uses the NTU S-Lab License 1.0; review its terms before commercial use or redistribution.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text("Minimum \(model.minimumRAMGB) GB · Recommended \(model.recommendedRAMGB) GB · Large images \(model.largeImageRAMGB) GB · Tiling \(model.defaultTiling)")
                     .font(.caption2)
                     .foregroundStyle(compatible ? Color.secondary.opacity(0.7) : Color.red)

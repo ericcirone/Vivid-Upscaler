@@ -21,6 +21,9 @@ final class UpscaleStore {
     var inputURL: URL?
     var mode: UpscaleMode { didSet { defaults.set(mode.rawValue, forKey: "mode") } }
     var deblurMode: DeblurMode { didSet { defaults.set(deblurMode.rawValue, forKey: "deblurMode") } }
+    var faceRestoreEnabled: Bool { didSet { defaults.set(faceRestoreEnabled, forKey: "faceRestoreEnabled") } }
+    var codeFormerPreset: CodeFormerPreset { didSet { defaults.set(codeFormerPreset.rawValue, forKey: "codeFormerPreset") } }
+    var codeFormerFidelityWeight: Double { didSet { defaults.set(codeFormerFidelityWeight, forKey: "codeFormerFidelityWeight") } }
     var variationSeed: Int { didSet { defaults.set(variationSeed, forKey: "variationSeed") } }
     var seedVR2Preset: SeedVR2Preset { didSet { defaults.set(seedVR2Preset.rawValue, forKey: "seedVR2Preset") } }
     var seedVR2InputNoiseScale: Double { didSet { defaults.set(seedVR2InputNoiseScale, forKey: "seedVR2InputNoiseScale") } }
@@ -64,6 +67,9 @@ final class UpscaleStore {
         mode = savedMode.minimumRAMGB <= systemRAMGB ? savedMode : (systemRAMGB >= 16 ? .normal : .fast)
         let savedDeblurMode = DeblurMode(rawValue: defaults.string(forKey: "deblurMode") ?? "") ?? .none
         deblurMode = savedDeblurMode.minimumRAMGB <= systemRAMGB ? savedDeblurMode : .none
+        faceRestoreEnabled = defaults.bool(forKey: "faceRestoreEnabled") && systemRAMGB >= 8
+        codeFormerPreset = CodeFormerPreset(rawValue: defaults.string(forKey: "codeFormerPreset") ?? "") ?? .balanced
+        codeFormerFidelityWeight = defaults.object(forKey: "codeFormerFidelityWeight") == nil ? 0.7 : defaults.double(forKey: "codeFormerFidelityWeight")
         variationSeed = defaults.object(forKey: "variationSeed") == nil
             ? GenerativeOptions.defaultVariationSeed
             : defaults.integer(forKey: "variationSeed")
@@ -84,6 +90,11 @@ final class UpscaleStore {
         UpscaleOptions(
             mode: mode,
             deblurMode: deblurMode,
+            codeFormerOptions: .init(
+                isEnabled: faceRestoreEnabled,
+                preset: codeFormerPreset,
+                customFidelityWeight: codeFormerFidelityWeight
+            ),
             generativeOptions: .init(variationSeed: variationSeed),
             seedVR2Options: .init(
                 preset: seedVR2Preset,
@@ -147,6 +158,10 @@ final class UpscaleStore {
         }
     }
 
+    var isFaceRestoreInstalled: Bool {
+        installedModelIDs.contains("face-restore")
+    }
+
     private func normalizeModelSelections() {
         if !installedModelIDs.contains(mode.rawValue),
            let fallback = installedUpscaleModes.first(where: { $0.minimumRAMGB <= systemRAMGB })
@@ -157,6 +172,9 @@ final class UpscaleStore {
         if let deblurModelID = deblurMode.modelID,
            !installedModelIDs.contains(deblurModelID) {
             deblurMode = .none
+        }
+        if faceRestoreEnabled && !isFaceRestoreInstalled {
+            faceRestoreEnabled = false
         }
     }
 
@@ -206,6 +224,16 @@ final class UpscaleStore {
                 return
             }
             guard installedModelIDs.contains(deblurModelID) else {
+                showOnboarding = true
+                return
+            }
+        }
+        if faceRestoreEnabled {
+            guard systemRAMGB >= 8 else {
+                errorMessage = "Face Restore requires at least 8 GB of RAM. This Mac has \(systemRAMGB) GB."
+                return
+            }
+            guard isFaceRestoreInstalled else {
                 showOnboarding = true
                 return
             }

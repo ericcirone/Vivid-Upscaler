@@ -4,6 +4,7 @@ struct ModelInfo: Identifiable, Hashable {
     let id: String
     let mode: UpscaleMode?
     let deblurMode: DeblurMode?
+    var isFaceRestore = false
     let title: String
     let modelName: String
     let backend: String
@@ -32,6 +33,10 @@ struct ModelInfo: Identifiable, Hashable {
         choices.filter { $0.deblurMode != nil }
     }
 
+    static var faceRestoreChoice: ModelInfo? {
+        choices.first(where: \.isFaceRestore)
+    }
+
     static let choices: [ModelInfo] = [
         .init(id: "fast", mode: .fast, deblurMode: nil, title: "Fast", modelName: "mlx-community/Real-ESRGAN-general-x4v3", backend: "MLX", minimumRAMGB: 8, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Quickest option: a compact native FP16 MLX upscaler for Apple Silicon."),
         .init(id: "normal", mode: .normal, deblurMode: nil, title: "Normal", modelName: "mlx-community/Real-ESRGAN-x4plus", backend: "MLX", minimumRAMGB: 16, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "The main quality and speed balance with a more powerful conventional single-pass upscaler."),
@@ -40,6 +45,7 @@ struct ModelInfo: Identifiable, Hashable {
         .init(id: "maximum", mode: .maximum, deblurMode: nil, title: "Maximum", modelName: "SeedVR2 3B source precision", backend: "Native MLX", minimumRAMGB: 24, recommendedRAMGB: 32, largeImageRAMGB: 48, defaultTiling: "auto", intendedUse: "Highest-quality, slowest SeedVR2 option using the 3B model at source precision."),
         .init(id: "maximum-experimental", mode: .maximumExperimental, deblurMode: nil, title: "Maximum Experimental", modelName: "HYPIR-SD2", backend: "PyTorch MPS, experimental", minimumRAMGB: 24, recommendedRAMGB: 32, largeImageRAMGB: 48, defaultTiling: "auto", intendedUse: "Maximum-tier experimental generative restoration using a single-pass diffusion-derived model for strong detail reconstruction and adjustable texture richness."),
         .init(id: "deblur-motion", mode: nil, deblurMode: .motion, title: "Motion Blur", modelName: "Restormer Motion Deblurring", backend: "PyTorch MPS", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Removes camera shake, subject movement, and directional motion blur while preserving the original image dimensions."),
-        .init(id: "deblur-defocus", mode: nil, deblurMode: .defocus, title: "Out of Focus", modelName: "Restormer Single-Image Defocus Deblurring", backend: "PyTorch MPS", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Reduces out-of-focus and lens-related blur while preserving the original image dimensions.")
+        .init(id: "deblur-defocus", mode: nil, deblurMode: .defocus, title: "Out of Focus", modelName: "Restormer Single-Image Defocus Deblurring", backend: "PyTorch MPS", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Reduces out-of-focus and lens-related blur while preserving the original image dimensions."),
+        .init(id: "face-restore", mode: nil, deblurMode: nil, isFaceRestore: true, title: "Face Restore", modelName: "CodeFormer v0.1.0", backend: "PyTorch MPS via Vivid adapter", minimumRAMGB: 8, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "face crops", intendedUse: "Restores detected faces with an adjustable balance between stronger reconstruction and closer identity preservation.")
     ]
 }

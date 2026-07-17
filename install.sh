@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="20"
+RUNTIME_VERSION="22"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -41,6 +41,7 @@ uv pip install --python "$VENV_DIR/bin/python" \
   "realesrgan-mlx @ git+https://github.com/xocialize/realesrgan-mlx.git@52c0fc1044277900b995308095a1f3cc484a3581" \
   pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" "spandrel-extra-arches==0.2.0" safetensors huggingface-hub \
   accelerate diffusers peft omegaconf einops opencv-python-headless timm open-clip-torch \
+  addict future lmdb pyyaml requests scikit-image scipy tqdm yapf lpips gdown \
   "openai==1.96.1" "tenacity==9.1.2"
 
 cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
@@ -635,6 +636,119 @@ if __name__ == "__main__":
 PY
 chmod +x "$INSTALL_ROOT/vivid_upscale.py"
 
+cat > "$INSTALL_ROOT/vivid_codeformer.py" <<'PY'
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from PIL import Image, ImageOps
+
+
+def link_weight(source: Path, destination: Path) -> None:
+    if not source.is_file():
+        raise RuntimeError(f"CodeFormer model asset is not installed: {source.name}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink() or destination.exists():
+        destination.unlink()
+    destination.symlink_to(source)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Vivid CodeFormer adapter")
+    parser.add_argument("input")
+    parser.add_argument("output")
+    parser.add_argument("--code-root", required=True)
+    parser.add_argument("--model-root", required=True)
+    parser.add_argument("--fidelity", type=float, required=True)
+    args = parser.parse_args()
+
+    if not 0 <= args.fidelity <= 1:
+        parser.error("--fidelity must be between 0 and 1")
+
+    input_path = Path(args.input).resolve()
+    output_path = Path(args.output).resolve()
+    code_root = Path(args.code_root).resolve()
+    model_root = Path(args.model_root).resolve() / "codeformer"
+    inference_script = code_root / "inference_codeformer.py"
+    if not inference_script.is_file():
+        raise RuntimeError("CodeFormer source adapter is not installed")
+
+    link_weight(model_root / "codeformer.pth", code_root / "weights/CodeFormer/codeformer.pth")
+    link_weight(model_root / "detection_Resnet50_Final.pth", code_root / "weights/facelib/detection_Resnet50_Final.pth")
+    link_weight(model_root / "parsing_parsenet.pth", code_root / "weights/facelib/parsing_parsenet.pth")
+
+    with tempfile.TemporaryDirectory(prefix="vivid-codeformer-") as work:
+        work_path = Path(work)
+        prepared_path = work_path / "source.png"
+        with Image.open(input_path) as source:
+            prepared = ImageOps.exif_transpose(source).convert("RGB")
+            source_size = prepared.size
+            prepared.save(prepared_path, format="PNG")
+
+        command = [
+            sys.executable,
+            "-u",
+            str(inference_script),
+            "--input_path",
+            str(prepared_path),
+            "--output_path",
+            work,
+            "--upscale",
+            "1",
+            "--fidelity_weight",
+            str(args.fidelity),
+            "--detection_model",
+            "retinaface_resnet50",
+        ]
+        print("      Restoring detected faces before upscale", flush=True)
+        print(f"      Fidelity weight: {args.fidelity:g}", flush=True)
+        process = subprocess.Popen(
+            command,
+            cwd=code_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        no_faces = False
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip()
+            print(f"      {line}", flush=True)
+            if "detect 0 faces" in line.lower() or "no face detected" in line.lower():
+                no_faces = True
+        status = process.wait()
+        if status != 0:
+            return status
+
+        result_path = work_path / "final_results/source.png"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if no_faces or not result_path.is_file():
+            print("      No eligible faces found; leaving the image unchanged", flush=True)
+            shutil.copyfile(prepared_path, output_path)
+            return 0
+
+        with Image.open(result_path) as restored:
+            restored = restored.convert("RGB")
+            if restored.size != source_size:
+                restored = restored.resize(source_size, Image.Resampling.LANCZOS)
+            restored.save(output_path, format="PNG")
+        print("      Face restoration complete", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+chmod +x "$INSTALL_ROOT/vivid_codeformer.py"
+
 cat > "$INSTALL_ROOT/vivid_seedvr2.py" <<'PY'
 #!/usr/bin/env python3
 """Vivid's SeedVR2 adapter for the restoration controls not exposed by MFLUX."""
@@ -830,6 +944,12 @@ if [[ -f "$SCRIPT_DIR/vivid_seedvr2.py" ]]; then
 else
   SEEDVR2_HELPER="$INSTALL_ROOT/vivid_seedvr2.py"
 fi
+if [[ -f "$SCRIPT_DIR/vivid_codeformer.py" ]]; then
+  CODEFORMER_HELPER="$SCRIPT_DIR/vivid_codeformer.py"
+else
+  CODEFORMER_HELPER="$INSTALL_ROOT/vivid_codeformer.py"
+fi
+CODEFORMER_ROOT="$INSTALL_ROOT/CodeFormer-source"
 MODEL_ROOT="$INSTALL_ROOT/models"
 ORIGINAL_CWD="$PWD"
 
@@ -856,6 +976,12 @@ model_is_installed() {
       ;;
     deblur-defocus)
       [[ -f "$MODEL_ROOT/restormer/defocus/single_image_defocus_deblurring.pth" ]]
+      ;;
+    face-restore)
+      [[ -f "$MODEL_ROOT/codeformer/codeformer.pth" \
+        && -f "$MODEL_ROOT/codeformer/detection_Resnet50_Final.pth" \
+        && -f "$MODEL_ROOT/codeformer/parsing_parsenet.pth" \
+        && -f "$CODEFORMER_ROOT/inference_codeformer.py" ]]
       ;;
     advanced|maximum)
       [[ -f "$MODEL_ROOT/SEEDVR2/seedvr2_ema_3b_fp16.safetensors" && -f "$MODEL_ROOT/SEEDVR2/ema_vae_fp16.safetensors" ]]
@@ -900,6 +1026,45 @@ except BaseException:
 PY
 }
 
+install_codeformer_source() {
+  "$PYTHON" -u - "$CODEFORMER_ROOT" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+destination = Path(sys.argv[1])
+revision = "b33cc7d639d6545bfcccc7e0bc6ae51f24e79c2b"
+if not (destination / "inference_codeformer.py").is_file():
+    url = f"https://github.com/sczhou/CodeFormer/archive/{revision}.tar.gz"
+    print(f"Downloading official CodeFormer source {revision[:8]}...", flush=True)
+    with tempfile.TemporaryDirectory(prefix="vivid-codeformer-source-") as temporary:
+        temporary_path = Path(temporary)
+        archive = temporary_path / "codeformer.tar.gz"
+        urllib.request.urlretrieve(url, archive)
+        with tarfile.open(archive, "r:gz") as bundle:
+            bundle.extractall(temporary_path, filter="data")
+        extracted = next(temporary_path.glob("CodeFormer-*"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            shutil.rmtree(destination)
+        shutil.copytree(extracted, destination)
+
+# BasicSR generates this file from setup.py rather than tracking it in Git.
+# Vivid imports the source tree directly, so generate the same minimal module
+# without invoking its CUDA-oriented package build.
+version = (destination / "basicsr/VERSION").read_text().strip()
+(destination / "basicsr/version.py").write_text(
+    "# GENERATED BY VIVID\n"
+    f"__version__ = {version!r}\n"
+    f"__gitsha__ = {revision[:7]!r}\n"
+    f"version_info = {tuple(int(part) for part in version.split('.'))!r}\n"
+)
+PY
+}
+
 system_ram_gb() {
   local bytes
   bytes="$(sysctl -n hw.memsize 2>/dev/null || true)"
@@ -912,7 +1077,7 @@ system_ram_gb() {
 
 minimum_ram_for_model() {
   case "$1" in
-    fast) echo 8 ;;
+    fast|face-restore) echo 8 ;;
     normal|normal-hq|advanced|deblur-motion|deblur-defocus) echo 16 ;;
     maximum|maximum-experimental) echo 24 ;;
     *) echo 0 ;;
@@ -923,7 +1088,7 @@ if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false; FACE_RESTORE=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
         model_is_installed normal-hq && NORMAL_HQ=true
@@ -932,9 +1097,10 @@ if [[ "${1:-}" == "models" ]]; then
         model_is_installed maximum-experimental && MAXIMUM_EXPERIMENTAL=true
         model_is_installed deblur-motion && DEBLUR_MOTION=true
         model_is_installed deblur-defocus && DEBLUR_DEFOCUS=true
-        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"deblur-motion":%s,"deblur-defocus":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS"
+        model_is_installed face-restore && FACE_RESTORE=true
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"deblur-motion":%s,"deblur-defocus":%s,"face-restore":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS" "$FACE_RESTORE"
       else
-        for MODEL_ID in fast normal normal-hq advanced maximum maximum-experimental deblur-motion deblur-defocus; do
+        for MODEL_ID in fast normal normal-hq advanced maximum maximum-experimental deblur-motion deblur-defocus face-restore; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -990,6 +1156,19 @@ if [[ "${1:-}" == "models" ]]; then
           download_model_file \
             "https://github.com/swz30/Restormer/releases/download/v1.0/single_image_defocus_deblurring.pth" \
             "$MODEL_ROOT/restormer/defocus/single_image_defocus_deblurring.pth"
+          ;;
+        face-restore)
+          echo "CodeFormer may reconstruct identity-sensitive facial details. Its NTU S-Lab License 1.0 must be reviewed before commercial use or redistribution."
+          install_codeformer_source
+          download_model_file \
+            "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth" \
+            "$MODEL_ROOT/codeformer/codeformer.pth"
+          download_model_file \
+            "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/detection_Resnet50_Final.pth" \
+            "$MODEL_ROOT/codeformer/detection_Resnet50_Final.pth"
+          download_model_file \
+            "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/parsing_parsenet.pth" \
+            "$MODEL_ROOT/codeformer/parsing_parsenet.pth"
           ;;
         advanced|maximum)
           download_model_file \
@@ -1165,7 +1344,7 @@ test_path.write_text(test_source)
 PY
           ;;
         *)
-          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2
           exit 2
           ;;
       esac
@@ -1181,8 +1360,9 @@ PY
         maximum-experimental) rm -rf "$MODEL_ROOT/HYPIR" "$INSTALL_ROOT/HYPIR-source" ;;
         deblur-motion) rm -rf "$MODEL_ROOT/restormer/motion" ;;
         deblur-defocus) rm -rf "$MODEL_ROOT/restormer/defocus" ;;
+        face-restore) rm -rf "$MODEL_ROOT/codeformer" ;;
         advanced|maximum) rm -rf "$MODEL_ROOT/SEEDVR2" ;;
-        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus" >&2; exit 2 ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2; exit 2 ;;
       esac
       echo "Deleted model: $MODEL_ID"
       exit 0
@@ -1220,6 +1400,7 @@ Modes:
 Optional preprocessing:
   deblur-motion   Restormer correction for camera shake, movement, and directional blur.
   deblur-defocus  Restormer correction for out-of-focus and lens blur.
+  face-restore     CodeFormer restoration for detected faces via PyTorch MPS.
 
 Options:
   --mode MODE                  fast, normal, normal-hq, advanced, maximum, or maximum-experimental
@@ -1229,6 +1410,9 @@ Options:
   --maximum-experimental       Alias for --mode maximum-experimental
   --deblur none|deblur-motion|deblur-defocus
                                Optional Restormer pass before upscaling. Default: none
+  --face-restore               Restore detected faces after deblur and before upscaling.
+  --codeformer-preset PRESET   enhance, balanced, faithful, or custom. Default: balanced
+  --codeformer-fidelity N      Custom fidelity weight from 0 to 1. Default: 0.7
   --scale N                    Multiply the source width and height by N. Files only.
   --resolution N               Target short edge in pixels. Default: 2048
   --max-resolution N           Maximum long edge. Default: 4096
@@ -1293,6 +1477,9 @@ TILE_MODE="auto"
 DENOISE_STRENGTH="0.5"
 QUALITY="90"
 DEBLUR="none"
+FACE_RESTORE="0"
+CODEFORMER_PRESET="balanced"
+CODEFORMER_FIDELITY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1326,6 +1513,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --deblur)
       DEBLUR="${2:?Missing value for --deblur}"
+      shift 2
+      ;;
+    --face-restore)
+      FACE_RESTORE="1"
+      shift
+      ;;
+    --codeformer-preset)
+      CODEFORMER_PRESET="${2:?Missing value for --codeformer-preset}"
+      shift 2
+      ;;
+    --codeformer-fidelity)
+      CODEFORMER_FIDELITY="${2:?Missing value for --codeformer-fidelity}"
       shift 2
       ;;
     --model)
@@ -1415,6 +1614,30 @@ case "$DEBLUR" in
     ;;
 esac
 
+case "$CODEFORMER_PRESET" in
+  enhance) : "${CODEFORMER_FIDELITY:=0.4}" ;;
+  balanced) : "${CODEFORMER_FIDELITY:=0.7}" ;;
+  faithful) : "${CODEFORMER_FIDELITY:=0.9}" ;;
+  custom) : "${CODEFORMER_FIDELITY:=0.7}" ;;
+  *)
+    echo "--codeformer-preset must be enhance, balanced, faithful, or custom" >&2
+    exit 2
+    ;;
+esac
+
+if ! "$PYTHON" - "$CODEFORMER_FIDELITY" <<'PY'
+import sys
+try:
+    value = float(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if 0.0 <= value <= 1.0 else 1)
+PY
+then
+  echo "--codeformer-fidelity must be a number from 0 to 1" >&2
+  exit 2
+fi
+
 case "$SEEDVR2_PRESET" in
   faithful)
     : "${INPUT_NOISE_SCALE:=0.00}"
@@ -1488,6 +1711,17 @@ if [[ "$DEBLUR" != "none" ]]; then
   fi
   if ! model_is_installed "$DEBLUR"; then
     echo "$DEBLUR is not installed. Run: vvd models install $DEBLUR" >&2
+    exit 1
+  fi
+fi
+if [[ "$FACE_RESTORE" == "1" ]]; then
+  FACE_RESTORE_REQUIRED_RAM="$(minimum_ram_for_model face-restore)"
+  if (( AVAILABLE_RAM > 0 && FACE_RESTORE_REQUIRED_RAM > AVAILABLE_RAM )); then
+    echo "face-restore requires at least $FACE_RESTORE_REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
+    exit 1
+  fi
+  if ! model_is_installed face-restore; then
+    echo "face-restore is not installed. Run: vvd models install face-restore" >&2
     exit 1
   fi
 fi
@@ -1632,6 +1866,12 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
     echo "      Output: auto-generated beside the input"
   fi
   echo "      Mode:   $MODE"
+  if [[ "$DEBLUR" != "none" ]]; then
+    echo "      Deblur: $DEBLUR"
+  fi
+  if [[ "$FACE_RESTORE" == "1" ]]; then
+    echo "      Face restore: CodeFormer $CODEFORMER_PRESET (fidelity $CODEFORMER_FIDELITY)"
+  fi
   case "$MODE" in
     advanced)
       echo "      Model:  SeedVR2 3B 8-bit via native MLX"
@@ -1677,6 +1917,7 @@ START_SECONDS=$SECONDS
 
 PROCESSING_INPUT="$INPUT"
 DEBLUR_OUTPUT=""
+FACE_RESTORE_OUTPUT=""
 if [[ "$DEBLUR" != "none" ]]; then
   DEBLUR_OUTPUT="${OUTPUT%.*}.vivid-deblur-temp.png"
   set +e
@@ -1697,6 +1938,24 @@ if [[ "$DEBLUR" != "none" ]]; then
     exit "$STATUS"
   fi
   PROCESSING_INPUT="$DEBLUR_OUTPUT"
+fi
+
+if [[ "$FACE_RESTORE" == "1" ]]; then
+  FACE_RESTORE_OUTPUT="${OUTPUT%.*}.vivid-face-restore-temp.png"
+  set +e
+  "$PYTHON" -u "$CODEFORMER_HELPER" \
+    "$PROCESSING_INPUT" "$FACE_RESTORE_OUTPUT" \
+    --code-root "$CODEFORMER_ROOT" \
+    --model-root "$MODEL_ROOT" \
+    --fidelity "$CODEFORMER_FIDELITY"
+  STATUS=$?
+  set -e
+  if [[ "$STATUS" -ne 0 ]]; then
+    rm -f "$FACE_RESTORE_OUTPUT"
+    [[ -n "$DEBLUR_OUTPUT" ]] && rm -f "$DEBLUR_OUTPUT"
+    exit "$STATUS"
+  fi
+  PROCESSING_INPUT="$FACE_RESTORE_OUTPUT"
 fi
 
 if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; then
@@ -1846,6 +2105,9 @@ fi
 if [[ -n "$DEBLUR_OUTPUT" ]]; then
   rm -f "$DEBLUR_OUTPUT"
 fi
+if [[ -n "$FACE_RESTORE_OUTPUT" ]]; then
+  rm -f "$FACE_RESTORE_OUTPUT"
+fi
 
 ELAPSED=$((SECONDS - START_SECONDS))
 if [[ "$STATUS" -eq 0 ]]; then
@@ -1872,6 +2134,12 @@ chmod +x "$BIN_DIR/vvd"
 # standalone-incompatible WebUI/CUDA helper from the previous runtime.
 if [[ -f "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth" && -f "$INSTALL_ROOT/HYPIR-source/test.py" ]]; then
   "$BIN_DIR/vvd" models install maximum-experimental
+fi
+
+# GitHub source archives omit BasicSR's generated version module. Repair an
+# already-downloaded CodeFormer source tree during runtime upgrades too.
+if [[ -f "$MODEL_ROOT/codeformer/codeformer.pth" ]]; then
+  "$BIN_DIR/vvd" models install face-restore
 fi
 
 printf '%s\n' "$RUNTIME_VERSION" > "$INSTALL_ROOT/runtime-version"

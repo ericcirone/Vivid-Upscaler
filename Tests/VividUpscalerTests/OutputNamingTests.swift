@@ -20,6 +20,12 @@ import Testing
     #expect(options.outputURL(for: input).path == "/tmp/portrait-vivid-upscale-normal-deblur-motion-2x.jpg")
 }
 
+@Test func faceRestoreOutputNameIdentifiesPreprocessing() throws {
+    let input = URL(fileURLWithPath: "/tmp/portrait.jpg")
+    let options = UpscaleOptions(mode: .normal, codeFormerOptions: .init(isEnabled: true), sizingKind: .scale, scale: 2, resolution: 2048, maxResolution: 4096, format: .same, quality: 90)
+    #expect(options.outputURL(for: input).path == "/tmp/portrait-vivid-upscale-normal-face-restore-2x.jpg")
+}
+
 @Test func qualitySupportMatchesOutputEncoding() {
     #expect(OutputFormat.jpg.supportsQuality(for: nil))
     #expect(OutputFormat.jxl.supportsQuality(for: nil))
