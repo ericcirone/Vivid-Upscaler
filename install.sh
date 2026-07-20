@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="26"
+RUNTIME_VERSION="27"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -926,6 +926,27 @@ def _from_numpy(image: np.ndarray, dtype) -> mx.array:
     return mx.array(image.astype(np.float32), dtype=mx.float32).astype(dtype)
 
 
+def _read_generation_metadata(image_path: str | None) -> dict | None:
+    if not image_path:
+        return None
+    try:
+        return MetadataReader.read_all_metadata(image_path)
+    except (AttributeError, TypeError, ValueError) as error:
+        # Some cameras encode EXIF UserComment as a tuple instead of bytes.
+        # MFLUX only uses this data to recover its own generation metadata;
+        # Vivid copies the source EXIF, XMP, and ICC profile during finalization.
+        try:
+            xmp = MetadataReader.read_xmp_metadata(image_path)
+        except (AttributeError, TypeError, ValueError):
+            xmp = None
+        print(
+            f"Warning: Ignoring unsupported MFLUX generation metadata: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return {"exif": None, "xmp": xmp}
+
+
 def _preprocess_image_to_dimensions(
     image_path: str,
     width: int,
@@ -1078,7 +1099,7 @@ def _generate_image(
     style = color_reference[:, :, :true_height, :true_width]
     print("[progress] 84% Correcting color", flush=True)
     decoded = _correct_color(decoded, style, vivid_args.color_correction)
-    metadata = MetadataReader.read_all_metadata(image_path) if image_path else None
+    metadata = _read_generation_metadata(image_path)
     print("[progress] 90% Preparing output", flush=True)
     return ImageUtil.to_image(
         seed=seed,
