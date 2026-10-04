@@ -11,6 +11,7 @@ This is the definitive model reference for the app. The catalog below mirrors `M
 | `advanced`             | `SeedVR2 3B 8-bit, 80% internal scale`      | Native MLX                    |      Yes     |       16 GB |           24 GB |           32 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | High-quality SeedVR2 restoration using 8-bit precision and a reduced internal resolution for a meaningful speed improvement over Maximum.                       |
 | `maximum`              | `SeedVR2 3B source precision`               | Native MLX                    |      Yes     |       24 GB |           32 GB |           48 GB | [Hugging Face model files](https://huggingface.co/numz/SeedVR2_comfyUI)                      | Highest-quality, slowest SeedVR2 option using the 3B model at source precision.                                                                                |
 | `maximum-experimental` | `HYPIR-SD2`                                 | PyTorch MPS, experimental     |      Yes     |       24 GB |           32 GB |           48 GB | [Official HYPIR model files](https://huggingface.co/lxq007/HYPIR)                            | Maximum-tier experimental generative restoration using a single-pass diffusion-derived model for strong detail reconstruction and adjustable texture richness. |
+| `photo-restore`        | `SCUNet real-world`                         | PyTorch MPS via Spandrel      |      No      |        8 GB |           16 GB |           24 GB | [Official SCUNet pretrained models](https://github.com/cszn/KAIR/releases/tag/v1.0)          | Cleans up noise, JPEG and compression artifacts, and mild blur at the original size, keeping the photo's own tones and colors. Use it alone or before upscaling. |
 | `deblur-motion`        | `Restormer Motion Deblurring`               | PyTorch MPS                   |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Removes camera shake, subject movement, and directional motion blur while preserving the original image dimensions.                                            |
 | `deblur-defocus`       | `Restormer Single-Image Defocus Deblurring` | PyTorch MPS                   |      No      |       16 GB |           24 GB |           32 GB | [Official Restormer pretrained models](https://github.com/swz30/Restormer/releases/tag/v1.0) | Reduces out-of-focus and lens-related blur while preserving the original image dimensions.                                                                     |
 | `face-restore`         | `CodeFormer v0.1.0`                         | PyTorch MPS via Vivid adapter |      No      |        8 GB |           16 GB |           24 GB | [Official CodeFormer repository](https://github.com/sczhou/CodeFormer)                       | Restores detected faces with an adjustable balance between stronger reconstruction and closer identity preservation.                                           |
@@ -296,6 +297,36 @@ flawless skin
 
 These terms can encourage plastic textures, oversharpening, or invented facial details.
 
+## Photo Restore presets
+
+Photo Restore is an optional, general-purpose cleanup pass for photos that are noisy, over-compressed, or slightly soft. It runs first, at the original image size, before deblur, face restoration, and upscaling. It can also run on its own with the app's **Original** size option or the CLI's `--no-upscale`.
+
+It uses SCUNet (Zhang et al., "Practical Blind Image Denoising via Swin-Conv-UNet and Data Synthesis"), which was trained on randomly shuffled real-world degradations: several kinds of sensor and processed-camera noise, JPEG compression, blur, and resizing. Two official checkpoints are installed together (about 144 MB):
+
+* `natural` uses `scunet_color_real_psnr.pth`, trained for fidelity. It produces the result closest to the actual scene.
+* `sharp` uses `scunet_color_real_gan.pth`, trained with an adversarial loss. It renders crisper texture, some of which is reconstructed rather than recovered.
+
+### Faithfulness guard
+
+The model output is never used directly. Vivid splits both images with the same five-level à trous wavelet decomposition used for HYPIR blending and keeps the **source's** coarse band (structures larger than roughly 32 to 64 px: exposure, white balance, color, and tonal gradients). Only the fine bands, where noise, grain, ringing, and block artifacts live, come from the model:
+
+```text
+result = source_low + lerp(source_high, restored_high, strength)
+```
+
+Because the decomposition is linear, the helper computes this as `source + strength * (delta - low(delta))`, where `delta = restored - source`, which needs one extra full-size buffer. The model therefore cannot brighten, recolor, or re-tone the photo, and `strength` controls how much of the original fine texture (including its grain) is replaced. At `0`, the source is returned unchanged.
+
+| Preset     | Strength | Detail    | Description                                                                                  |
+| ---------- | -------: | --------- | -------------------------------------------------------------------------------------------- |
+| `gentle`   |   `0.60` | `natural` | Light cleanup that keeps some of the original grain. For photos that are already fairly good. |
+| `balanced` |   `0.85` | `natural` | Removes most noise and compression artifacts while keeping a trace of natural texture. Default. |
+| `strong`   |   `1.00` | `sharp`   | Full cleanup with crisper reconstructed texture for heavily degraded photos.                 |
+| `custom`   |  `0–1`   | either    | Uses `--restore-strength` and `--restore-detail`; defaults `0.85` and `natural`.            |
+
+Measured on a 9 MP aerial photo with added Gaussian noise and JPEG quality-50 compression (Apple Silicon, MPS): the degraded input scored 34.6 dB PSNR against the clean original, `balanced` 37.3 dB, and `strong` 36.3 dB, in about 26 seconds each. Anchoring the coarse band to the source cost less than 0.05 dB compared with the raw model output.
+
+Photo Restore does not repair scratches, tears, dust, or missing regions, and it does not correct fading or color casts, because those would change the photo rather than clean it.
+
 ## CodeFormer face-restoration presets
 
 CodeFormer is an optional preprocessor that restores detected faces before the selected Vivid upscaling mode runs.
@@ -446,6 +477,9 @@ The interface should explain that fidelity weight is a trade-off rather than a s
 * RAM compatibility is enforced using the minimum value: a model is installable when detected system RAM is greater than or equal to its minimum requirement.
 * The app's default tiling value for every upscale and deblur model is `auto`; tiling can reduce memory pressure for larger inputs.
 * CodeFormer processes individual detected face crops and does not use the general image tiling setting.
+* Photo Restore processes images up to 1 MP whole. Larger images use 512 px tiles (384 px under 16 GB, or with `--tile on`) with a 48 px overlap margin, because SCUNet's shifted-window attention and U-Net context reach well beyond the 24 px margin used by the upscalers. Tiled and whole-image results differ by less than 0.4 intensity levels on average, with no measurable increase at tile boundaries.
+* Photo Restore runs before Restormer and CodeFormer so that deblurring does not amplify noise and face detection sees clean input.
+* The SCUNet code and weights are released under the Apache License 2.0.
 * When automatic deblur detection is unavailable or uncertain, the app should let the user choose between Motion Blur and Out of Focus rather than silently applying the wrong checkpoint.
 * Global deblurring should run before CodeFormer so that the face-restoration model receives cleaner face crops.
 * CodeFormer should run before the selected Vivid upscale mode because it is defined as a preprocessor.
@@ -455,9 +489,10 @@ The interface should explain that fidelity weight is a trade-off rather than a s
 
 ```text
 Input image
+  -> Optional SCUNet photo restore (keeps source tones and colors)
   -> Optional Restormer deblur
   -> Optional CodeFormer face restoration
-  -> Selected Vivid upscale mode
+  -> Selected Vivid upscale mode (skipped with --no-upscale / Original size)
   -> Determine model processing dimensions
        -> Advanced SeedVR2: 80% of requested width and height
        -> Maximum SeedVR2: full requested width and height
@@ -476,6 +511,7 @@ Input image
 * SeedVR2 presets and advanced restoration controls: [`Sources/VividUpscaler/Models/SeedVR2Options.swift`](Sources/VividUpscaler/Models/SeedVR2Options.swift)
 * HYPIR presets, restoration strength, prompt, and tiling controls: [`Sources/VividUpscaler/Models/HYPIROptions.swift`](Sources/VividUpscaler/Models/HYPIROptions.swift)
 * Variation-seed support and persistence: [`Sources/VividUpscaler/Models/GenerativeOptions.swift`](Sources/VividUpscaler/Models/GenerativeOptions.swift)
+* Photo Restore presets and settings: [`Sources/VividUpscaler/Models/PhotoRestoreOptions.swift`](Sources/VividUpscaler/Models/PhotoRestoreOptions.swift)
 * Deblur choices and preprocessing configuration: [`Sources/VividUpscaler/Models/DeblurOptions.swift`](Sources/VividUpscaler/Models/DeblurOptions.swift)
 * CodeFormer presets and face-restoration configuration: [`Sources/VividUpscaler/Models/CodeFormerOptions.swift`](Sources/VividUpscaler/Models/CodeFormerOptions.swift)
 * Preprocessor ordering and composition: [`Sources/VividUpscaler/Processing/PreprocessingPipeline.swift`](Sources/VividUpscaler/Processing/PreprocessingPipeline.swift)

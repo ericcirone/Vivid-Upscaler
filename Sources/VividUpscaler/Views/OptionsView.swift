@@ -33,8 +33,15 @@ struct OptionsView: View {
                         .disabled(mode.minimumRAMGB > store.systemRAMGB)
                 }
             }
-            Text(store.mode.detail).font(.caption).foregroundStyle(.secondary)
-            if store.mode.isExperimental {
+            .disabled(store.keepsOriginalSize)
+            if store.keepsOriginalSize {
+                Text("Upscaling is skipped at Original size; only enhancements run.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(store.mode.detail).font(.caption).foregroundStyle(.secondary)
+            }
+            if store.mode.isExperimental && !store.keepsOriginalSize {
                 Text("Opt-in generative restoration. Results may invent plausible detail; avoid for identity, text, or documentary-critical work.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -44,7 +51,7 @@ struct OptionsView: View {
                     .font(.caption2)
                     .foregroundStyle(.red)
             }
-            if store.mode.supportsNoiseReduction {
+            if store.mode.supportsNoiseReduction && !store.keepsOriginalSize {
                 LabeledContent("Noise reduction") {
                     Text(store.noiseReduction, format: .percent.precision(.fractionLength(0)))
                         .monospacedDigit()
@@ -94,9 +101,18 @@ struct OptionsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            } else {
+            } else if store.sizingKind == .resolution {
                 TextField("Short edge (px)", value: $store.resolution, format: .number)
                 TextField("Max long edge (px)", value: $store.maxResolution, format: .number)
+            } else {
+                Text("Keeps the original dimensions and skips the upscaling model.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !store.options.hasEnhancements {
+                    Text("Turn on Photo Restore or another enhancement below.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
 
             if let item = store.selectedItem ?? store.items.first,
@@ -149,6 +165,10 @@ struct OptionsView: View {
 
     private var enhancementSection: some View {
         Section("Enhancements") {
+            if store.isPhotoRestoreInstalled {
+                photoRestoreControls
+            }
+
             if store.installedDeblurModes.count > 1 {
                 Picker("Deblur", selection: $store.deblurMode) {
                     ForEach(store.installedDeblurModes) { deblurMode in
@@ -200,17 +220,77 @@ struct OptionsView: View {
                 }
             }
 
-            if store.installedDeblurModes.count == 1 || !store.isFaceRestoreInstalled {
-                Button("Get Deblur and Face Restore Models…") { store.showOnboarding = true }
+            if !store.isPhotoRestoreInstalled || store.installedDeblurModes.count == 1 || !store.isFaceRestoreInstalled {
+                Button("Get Enhancement Models…") { store.showOnboarding = true }
                     .buttonStyle(.link)
                     .font(.caption)
             }
-            if store.deblurMode != .none || store.faceRestoreEnabled {
-                Text("Runs before upscaling: deblur first, then face restoration.")
+            if let order = enhancementOrderDescription {
+                Text(order)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    @ViewBuilder
+    private var photoRestoreControls: some View {
+        Toggle("Restore photo", isOn: $store.photoRestoreEnabled)
+        if store.photoRestoreEnabled {
+            Picker("Restore preset", selection: $store.photoRestorePreset) {
+                ForEach(PhotoRestorePreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            Text(store.photoRestorePreset.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if store.photoRestorePreset == .custom {
+                LabeledContent("Strength") {
+                    Text(store.photoRestoreStrength, format: .percent.precision(.fractionLength(0)))
+                        .monospacedDigit()
+                }
+                Slider(value: $store.photoRestoreStrength, in: 0...1, step: 0.05) {
+                    Text("Strength")
+                } minimumValueLabel: {
+                    Text("Original").font(.caption2)
+                } maximumValueLabel: {
+                    Text("Clean").font(.caption2)
+                }
+                .labelsHidden()
+                Picker("Detail", selection: $store.photoRestoreDetail) {
+                    ForEach(PhotoRestoreDetail.allCases) { detail in
+                        Text(detail.title).tag(detail)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            Text("Tones and colors always come from the original; only noise, grain, and compression artifacts are replaced.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if store.options.photoRestoreOptions.resolvedSettings.detail == .sharp {
+                Text("Sharp detail can reconstruct fine texture that was not in the original.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private var enhancementOrderDescription: String? {
+        let steps = store.options.preprocessingPipeline.steps
+        guard !steps.isEmpty else { return nil }
+        let names = steps.map { step in
+            switch step {
+            case .photoRestore: "photo restore"
+            case .deblur: "deblur"
+            case .faceRestore: "face restoration"
+            }
+        }
+        let sequence = names.count > 1
+            ? names.dropLast().joined(separator: ", ") + ", then " + names.last!
+            : names[0]
+        let prefix = store.keepsOriginalSize ? "Runs at the original size" : "Runs before upscaling"
+        return "\(prefix): \(sequence)."
     }
 
     // MARK: Generative settings
@@ -345,7 +425,11 @@ struct OptionsView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(store.items.isEmpty || !store.hasInstalledUpscaleModel)
+                .disabled(
+                    store.items.isEmpty
+                        || !store.hasInstalledUpscaleModel
+                        || (store.keepsOriginalSize && !store.options.hasEnhancements)
+                )
             }
         }
         .controlSize(.large)
@@ -353,9 +437,10 @@ struct OptionsView: View {
     }
 
     private var upscaleTitle: String {
+        let verb = store.keepsOriginalSize ? "Restore" : "Upscale"
         switch store.items.count {
-        case 0, 1: "Upscale Photo"
-        default: "Upscale \(store.items.count) Photos"
+        case 0, 1: return "\(verb) Photo"
+        default: return "\(verb) \(store.items.count) Photos"
         }
     }
 }

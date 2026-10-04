@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import VividUpscaler
@@ -6,7 +7,7 @@ import Testing
 struct ModelCatalogTests {
     @Test("Catalog exposes every processing mode")
     func exposesEveryMode() {
-        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "art", "advanced", "maximum", "maximum-experimental", "deblur-motion", "deblur-defocus", "face-restore"])
+        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "art", "advanced", "maximum", "maximum-experimental", "photo-restore", "deblur-motion", "deblur-defocus", "face-restore"])
         #expect(Set(ModelInfo.choices.compactMap(\.mode)) == Set(UpscaleMode.allCases))
         #expect(Set(ModelInfo.choices.compactMap(\.deblurMode)) == Set([DeblurMode.motion, DeblurMode.defocus]))
     }
@@ -24,6 +25,7 @@ struct ModelCatalogTests {
         #expect(requirements["deblur-motion"] == 16)
         #expect(requirements["deblur-defocus"] == 16)
         #expect(requirements["face-restore"] == 8)
+        #expect(requirements["photo-restore"] == 8)
     }
 
     @Test("Catalog uses the requested model and backend mapping")
@@ -53,6 +55,9 @@ struct ModelCatalogTests {
         #expect(catalog["deblur-defocus"]?.1 == "PyTorch MPS")
         #expect(catalog["face-restore"]?.0 == "CodeFormer v0.1.0")
         #expect(catalog["face-restore"]?.1 == "PyTorch MPS via Vivid adapter")
+        #expect(catalog["photo-restore"]?.0 == "SCUNet real-world")
+        #expect(catalog["photo-restore"]?.1 == "PyTorch MPS via Spandrel")
+        #expect(ModelInfo.photoRestoreChoice?.id == "photo-restore")
     }
 
     @Test("Generative restoration capabilities match the model contract")
@@ -107,6 +112,84 @@ struct ModelCatalogTests {
         let faceOptions = CodeFormerOptions(isEnabled: true, preset: .balanced)
         let pipeline = PreprocessingPipeline(deblurMode: .motion, codeFormerOptions: faceOptions)
         #expect(pipeline.steps == [.deblur(.motion), .faceRestore(faceOptions)])
+    }
+
+    @Test("Photo restore presets resolve, clamp custom strength, and run first")
+    func photoRestoreContract() {
+        #expect(PhotoRestorePreset.gentle.settings == .init(strength: 0.60, detail: .natural))
+        #expect(PhotoRestorePreset.balanced.settings == .init(strength: 0.85, detail: .natural))
+        #expect(PhotoRestorePreset.strong.settings == .init(strength: 1.00, detail: .sharp))
+        #expect(PhotoRestoreOptions(preset: .custom, customStrength: 2, customDetail: .sharp).resolvedSettings == .init(strength: 1, detail: .sharp))
+        #expect(PhotoRestoreOptions(preset: .custom, customStrength: -1).resolvedSettings == .init(strength: 0, detail: .natural))
+        #expect(PhotoRestoreOptions(preset: .gentle, customStrength: 0.1, customDetail: .sharp).resolvedSettings == .init(strength: 0.60, detail: .natural))
+
+        let restore = PhotoRestoreOptions(isEnabled: true, preset: .balanced)
+        let faceOptions = CodeFormerOptions(isEnabled: true)
+        let pipeline = PreprocessingPipeline(photoRestoreOptions: restore, deblurMode: .defocus, codeFormerOptions: faceOptions)
+        #expect(pipeline.steps == [.photoRestore(.init(strength: 0.85, detail: .natural)), .deblur(.defocus), .faceRestore(faceOptions)])
+    }
+
+    @Test("App options forward photo restore settings to the CLI")
+    func cliPhotoRestoreArguments() {
+        let input = URL(fileURLWithPath: "/tmp/input.png")
+        let output = URL(fileURLWithPath: "/tmp/output.png")
+        var options = UpscaleOptions(
+            mode: .normal,
+            photoRestoreOptions: .init(isEnabled: true, preset: .strong),
+            sizingKind: .scale,
+            scale: 2,
+            resolution: 2048,
+            maxResolution: 4096,
+            format: .png,
+            quality: 90
+        )
+        var arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        func containsPair(_ flag: String, _ value: String) -> Bool {
+            zip(arguments, arguments.dropFirst()).contains { $0 == flag && $1 == value }
+        }
+        #expect(arguments.contains("--photo-restore"))
+        #expect(containsPair("--restore-preset", "strong"))
+        #expect(!arguments.contains("--restore-strength"))
+        #expect(!arguments.contains("--no-upscale"))
+
+        options.photoRestoreOptions = .init(isEnabled: true, preset: .custom, customStrength: 0.7, customDetail: .sharp)
+        arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        #expect(containsPair("--restore-preset", "custom"))
+        #expect(containsPair("--restore-strength", "0.70"))
+        #expect(containsPair("--restore-detail", "sharp"))
+
+        options.photoRestoreOptions.isEnabled = false
+        arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        #expect(!arguments.contains("--photo-restore"))
+        #expect(!arguments.contains("--restore-preset"))
+    }
+
+    @Test("Original size skips the upscaler and its sizing and mode arguments")
+    func cliOriginalSizeArguments() {
+        let input = URL(fileURLWithPath: "/tmp/input.jpg")
+        let output = URL(fileURLWithPath: "/tmp/output.jpg")
+        let options = UpscaleOptions(
+            mode: .advanced,
+            photoRestoreOptions: .init(isEnabled: true),
+            generativeOptions: .init(variationSeed: 7),
+            sizingKind: .original,
+            scale: 2,
+            resolution: 2048,
+            maxResolution: 4096,
+            format: .same,
+            quality: 85
+        )
+        let arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        #expect(arguments.contains("--no-upscale"))
+        #expect(arguments.contains("--photo-restore"))
+        #expect(!arguments.contains("--scale"))
+        #expect(!arguments.contains("--resolution"))
+        #expect(!arguments.contains("--seed"))
+        #expect(!arguments.contains("--seedvr2-preset"))
+        #expect(zip(arguments, arguments.dropFirst()).contains { $0 == "--quality" && $1 == "85" })
+        #expect(options.outputPixelSize(for: CGSize(width: 1200, height: 800)) == CGSize(width: 1200, height: 800))
+        #expect(options.hasEnhancements)
+        #expect(!options.upscales)
     }
 
     @Test("App options forward variation and restoration settings to the CLI")
@@ -240,14 +323,16 @@ struct ModelCatalogTests {
     @MainActor
     func removedSelectionsFallBackToDownloadedChoices() {
         let store = UpscaleStore(systemMemoryBytes: 32 * 1_073_741_824)
-        store.installedModelIDs = ["fast", "normal", "deblur-motion", "face-restore"]
+        store.installedModelIDs = ["fast", "normal", "photo-restore", "deblur-motion", "face-restore"]
         store.mode = .normal
+        store.photoRestoreEnabled = true
         store.deblurMode = .motion
         store.faceRestoreEnabled = true
 
         store.installedModelIDs = ["fast"]
 
         #expect(store.mode == .fast)
+        #expect(!store.photoRestoreEnabled)
         #expect(store.deblurMode == .none)
         #expect(!store.faceRestoreEnabled)
     }
@@ -259,6 +344,10 @@ struct ModelCatalogTests {
         firstStore.mode = .maximum
         firstStore.deblurMode = .motion
         firstStore.faceRestoreEnabled = true
+        firstStore.photoRestoreEnabled = true
+        firstStore.photoRestorePreset = .custom
+        firstStore.photoRestoreStrength = 0.3
+        firstStore.photoRestoreDetail = .sharp
         firstStore.hypirPreset = .enhanced
         firstStore.hypirRestorationStrength = 0.25
         firstStore.hypirPatchSize = 1_024
@@ -278,6 +367,10 @@ struct ModelCatalogTests {
         #expect(restartedStore.mode == .normal)
         #expect(restartedStore.deblurMode == .none)
         #expect(!restartedStore.faceRestoreEnabled)
+        #expect(!restartedStore.photoRestoreEnabled)
+        #expect(restartedStore.photoRestorePreset == .balanced)
+        #expect(restartedStore.photoRestoreStrength == 0.85)
+        #expect(restartedStore.photoRestoreDetail == .natural)
         #expect(restartedStore.hypirPreset == .balanced)
         #expect(restartedStore.hypirRestorationStrength == 0.70)
         #expect(restartedStore.hypirPatchSize == 768)

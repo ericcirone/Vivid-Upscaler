@@ -5,6 +5,7 @@ struct ModelInfo: Identifiable, Hashable {
     let mode: UpscaleMode?
     let deblurMode: DeblurMode?
     var isFaceRestore = false
+    var isPhotoRestore = false
     let title: String
     let modelName: String
     let backend: String
@@ -48,6 +49,10 @@ struct ModelInfo: Identifiable, Hashable {
         choices.filter { $0.deblurMode != nil }
     }
 
+    static var photoRestoreChoice: ModelInfo? {
+        choices.first(where: \.isPhotoRestore)
+    }
+
     static var faceRestoreChoice: ModelInfo? {
         choices.first(where: \.isFaceRestore)
     }
@@ -73,6 +78,7 @@ struct ModelInfo: Identifiable, Hashable {
         .init(id: "advanced", mode: .advanced, deblurMode: nil, title: "Advanced", modelName: "SeedVR2 3B 8-bit, 80% internal scale", backend: "Native MLX", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "High-quality SeedVR2 restoration using 8-bit precision and a reduced internal resolution for a meaningful speed improvement over Maximum.", downloadMB: 6_800, sharesWeightsWith: ["maximum"]),
         .init(id: "maximum", mode: .maximum, deblurMode: nil, title: "Maximum", modelName: "SeedVR2 3B source precision", backend: "Native MLX", minimumRAMGB: 24, recommendedRAMGB: 32, largeImageRAMGB: 48, defaultTiling: "auto", intendedUse: "Highest-quality, slowest SeedVR2 option using the 3B model at source precision.", downloadMB: 6_800, sharesWeightsWith: ["advanced"]),
         .init(id: "maximum-experimental", mode: .maximumExperimental, deblurMode: nil, title: "Maximum Experimental", modelName: "HYPIR-SD2", backend: "PyTorch MPS, experimental", minimumRAMGB: 24, recommendedRAMGB: 32, largeImageRAMGB: 48, defaultTiling: "auto", intendedUse: "Maximum-tier experimental generative restoration using a single-pass diffusion-derived model for strong detail reconstruction and adjustable texture richness.", downloadMB: 3_400),
+        .init(id: "photo-restore", mode: nil, deblurMode: nil, isPhotoRestore: true, title: "Photo Restore", modelName: "SCUNet real-world", backend: "PyTorch MPS via Spandrel", minimumRAMGB: 8, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "auto", intendedUse: "Cleans up noise, JPEG and compression artifacts, and mild blur at the original size, keeping the photo's own tones and colors. Use it alone or before upscaling.", downloadMB: 144),
         .init(id: "deblur-motion", mode: nil, deblurMode: .motion, title: "Motion Blur", modelName: "Restormer Motion Deblurring", backend: "PyTorch MPS", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Removes camera shake, subject movement, and directional motion blur while preserving the original image dimensions.", downloadMB: 105),
         .init(id: "deblur-defocus", mode: nil, deblurMode: .defocus, title: "Out of Focus", modelName: "Restormer Single-Image Defocus Deblurring", backend: "PyTorch MPS", minimumRAMGB: 16, recommendedRAMGB: 24, largeImageRAMGB: 32, defaultTiling: "auto", intendedUse: "Reduces out-of-focus and lens-related blur while preserving the original image dimensions.", downloadMB: 105),
         .init(id: "face-restore", mode: nil, deblurMode: nil, isFaceRestore: true, title: "Face Restore", modelName: "CodeFormer v0.1.0", backend: "PyTorch MPS via Vivid adapter", minimumRAMGB: 8, recommendedRAMGB: 16, largeImageRAMGB: 24, defaultTiling: "face crops", intendedUse: "Restores detected faces with an adjustable balance between stronger reconstruction and closer identity preservation.", downloadMB: 570)

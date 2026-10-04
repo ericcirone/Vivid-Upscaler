@@ -27,6 +27,18 @@ import Testing
     #expect(options.outputURL(for: input).path == "/tmp/portrait-vivid-upscale-normal-face-restore-2x.jpg")
 }
 
+@Test func photoRestoreOutputNameIdentifiesPreprocessingOrder() throws {
+    let input = URL(fileURLWithPath: "/tmp/portrait.jpg")
+    let options = UpscaleOptions(mode: .normal, photoRestoreOptions: .init(isEnabled: true), deblurMode: .motion, sizingKind: .scale, scale: 2, resolution: 2048, maxResolution: 4096, format: .same, quality: 90)
+    #expect(options.outputURL(for: input).path == "/tmp/portrait-vivid-upscale-normal-photo-restore-deblur-motion-2x.jpg")
+}
+
+@Test func originalSizeOutputNameOmitsTheUpscaler() throws {
+    let input = URL(fileURLWithPath: "/tmp/portrait.heic")
+    let options = UpscaleOptions(mode: .normal, photoRestoreOptions: .init(isEnabled: true), sizingKind: .original, scale: 2, resolution: 2048, maxResolution: 4096, format: .same, quality: 90)
+    #expect(options.outputURL(for: input).path == "/tmp/portrait-vivid-photo-restore-original.jpg")
+}
+
 @Test func customOutputDirectoryReplacesTheInputFolder() {
     let input = URL(fileURLWithPath: "/photos/portrait.jpg")
     let options = UpscaleOptions(mode: .normal, sizingKind: .scale, scale: 2, resolution: 2048, maxResolution: 4096, format: .png, quality: 90)

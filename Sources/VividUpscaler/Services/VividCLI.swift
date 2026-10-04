@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 actor VividCLI {
-    static let runtimeVersion = "28"
+    static let runtimeVersion = "29"
 
     struct Event: Sendable {
         let fraction: Double?
@@ -102,11 +102,27 @@ actor VividCLI {
 
     static func upscaleArguments(input: URL, output: URL, options: UpscaleOptions) -> [String] {
         var arguments = [input.path, output.path, "--mode", options.mode.rawValue]
+        if options.photoRestoreOptions.isEnabled {
+            arguments += ["--photo-restore"]
+            arguments += ["--restore-preset", options.photoRestoreOptions.preset.rawValue]
+            if options.photoRestoreOptions.preset == .custom {
+                let settings = options.photoRestoreOptions.resolvedSettings
+                arguments += ["--restore-strength", String(format: "%.2f", settings.strength)]
+                arguments += ["--restore-detail", settings.detail.rawValue]
+            }
+        }
         arguments += ["--deblur", options.deblurMode.rawValue]
         if options.codeFormerOptions.isEnabled {
             arguments += ["--face-restore"]
             arguments += ["--codeformer-preset", options.codeFormerOptions.preset.rawValue]
             arguments += ["--codeformer-fidelity", String(options.codeFormerOptions.resolvedFidelityWeight)]
+        }
+        guard options.upscales else {
+            arguments += ["--no-upscale"]
+            if options.format.supportsQuality(for: input) {
+                arguments += ["--quality", String(Int(options.quality.rounded()))]
+            }
+            return arguments
         }
         if options.mode.supportsNoiseReduction {
             arguments += ["--denoise-strength", String(format: "%.2f", options.cliDenoiseStrength)]
@@ -136,6 +152,8 @@ actor VividCLI {
             arguments += ["--scale", String(options.scale)]
         case .resolution:
             arguments += ["--resolution", String(options.resolution), "--max-resolution", String(options.maxResolution)]
+        case .original:
+            break
         }
         if options.format.supportsQuality(for: input) {
             arguments += ["--quality", String(Int(options.quality.rounded()))]
@@ -397,12 +415,12 @@ actor VividCLI {
         if line.contains("[2/3]") { return Event(fraction: 0.15, message: "Upscaling image") }
         if line.contains("Downloading") { return Event(fraction: 0.1, message: line.trimmingCharacters(in: .whitespaces)) }
         if line.contains("Loading model") { return Event(fraction: 0.2, message: "Loading model") }
-        if line.contains("Processing full image") { return Event(fraction: nil, message: "Upscaling image") }
+        if line.contains("Processing full image") { return Event(fraction: nil, message: "Processing image") }
         if line.contains("Tiles:"),
            let match = line.range(of: #"[0-9]+/[0-9]+"#, options: .regularExpression) {
             let parts = line[match].split(separator: "/").compactMap { Double($0) }
             if parts.count == 2, parts[1] > 0 {
-                return Event(fraction: 0.2 + 0.7 * parts[0] / parts[1], message: "Upscaling tile \(Int(parts[0])) of \(Int(parts[1]))")
+                return Event(fraction: 0.2 + 0.7 * parts[0] / parts[1], message: "Processing tile \(Int(parts[0])) of \(Int(parts[1]))")
             }
         }
         if line.contains("Saving output") { return Event(fraction: 0.95, message: "Saving") }

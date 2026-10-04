@@ -9,6 +9,7 @@ Vivid is an open-source, native macOS photo upscaler with an optional Terminal c
 
 - **Batch upscaling**: drop any mix of photos and folders (or open them from Finder or the Dock icon). Each photo shows its source and output dimensions, live status, and a per-photo Compare button; failures are reported per photo without stopping the batch.
 - **Seven upscale modes** from fast Real-ESRGAN to SeedVR2 and HYPIR diffusion restoration, including an **Art & Anime** mode for illustrations and line art.
+- **Photo Restore**: a general AI cleanup pass (SCUNet) for noisy, over-compressed, or slightly soft photos. It keeps the original tones and colors, and it can run alone at the original size or before any upscale mode.
 - **Enhancements**: Restormer motion/defocus deblur and CodeFormer face restoration before upscaling, plus adjustable noise reduction in Fast mode.
 - **Inputs**: PNG, JPEG, HEIC/HEIF, WebP, AVIF, JPEG XL, TIFF, BMP, GIF, 16-bit and CMYK images. EXIF-rotated photos are processed upright.
 - **Outputs**: same as input, PNG, JPG, JPEG XL, WebP, AVIF, or TIFF, saved beside the original or in a folder you choose. Transparency, EXIF, XMP, DPI, and ICC profiles are preserved. Results are written atomically, so a stopped job never leaves a truncated file.
@@ -93,6 +94,9 @@ vvd input.jpg output.png --mode maximum --tile on
 vvd input.jpg output.png --mode maximum --seedvr2-preset softer-detail --seed 123
 vvd IMG_0042.heic --format jpg --mode normal-hq      # HEIC in, JPG out
 vvd drawing.png --mode art --scale 4
+vvd old-photo.jpg --photo-restore --scale 2          # Clean up, then upscale
+vvd noisy.jpg --photo-restore --no-upscale           # Clean up only; writes noisy_restored.jpg
+vvd scan.png --photo-restore --restore-preset strong --mode normal-hq
 
 # Batch: any mix of files and folders
 vvd ~/Pictures/Trip --output-dir ~/Pictures/Trip-Upscaled --scale 2
@@ -101,6 +105,7 @@ vvd *.jpg --output-dir upscaled --mode fast --skip-existing
 vvd models status
 vvd models status --json
 vvd models install normal
+vvd models install photo-restore
 vvd models install deblur-motion
 vvd models install face-restore
 vvd models delete normal
@@ -111,6 +116,11 @@ Run `vvd --help` for the complete option list. The main options are:
 | Option | Description |
 | --- | --- |
 | `--mode MODE` | `fast`, `normal`, `normal-hq`, `art`, `advanced`, `maximum`, or `maximum-experimental`; default is `normal` |
+| `--photo-restore` | Clean up noise, JPEG artifacts, and mild blur before any other step, keeping the source's tones and colors |
+| `--restore-preset PRESET` | `gentle`, `balanced`, `strong`, or `custom`; default is `balanced` |
+| `--restore-strength N` | Custom share of the source's fine detail replaced, from 0 to 1; requires `custom`; default is 0.85 |
+| `--restore-detail natural\|sharp` | Custom fidelity-trained or GAN-trained weights; requires `custom`; default is `natural` |
+| `--no-upscale` | Skip the upscaling model and keep the source dimensions; requires an enhancement |
 | `--deblur MODE` | Optional `deblur-motion` or `deblur-defocus` Restormer pass before upscaling; default is `none` |
 | `--face-restore` | Restore detected faces with CodeFormer after deblur and before upscaling; disabled by default |
 | `--codeformer-preset PRESET` | `enhance`, `balanced`, `faithful`, or `custom`; default is `balanced` |
@@ -136,7 +146,7 @@ Run `vvd --help` for the complete option list. The main options are:
 | `--hypir-prompt TEXT` | Custom HYPIR photographic-result prompt |
 | `--no-progress` | Hide wrapper progress messages |
 
-A bare output filename is saved beside the input file. Include a slash, such as `./output.jpg`, to explicitly save relative to the current directory. When no output is supplied, Vivid writes an `_upscaled` file beside the input (HEIC inputs default to JPG, BMP and GIF to PNG).
+A bare output filename is saved beside the input file. Include a slash, such as `./output.jpg`, to explicitly save relative to the current directory. When no output is supplied, Vivid writes an `_upscaled` file (`_restored` with `--no-upscale`) beside the input (HEIC inputs default to JPG, BMP and GIF to PNG).
 
 Batch mode starts when `--output-dir` is given, an input is a folder, or more than two paths are given. Folders are scanned non-recursively for supported images, each image is processed in turn, and the batch continues past individual failures; the exit status is non-zero if any image failed.
 
@@ -151,6 +161,7 @@ Batch mode starts when `--output-dir` is given, an input is a folder, or more th
 | `advanced` | SeedVR2 3B 8-bit, 80% internal scale | Native MLX | 16 GB | 24 GB | 32 GB | High-quality restoration with a meaningful speed improvement over Maximum |
 | `maximum` | SeedVR2 3B source precision | Native MLX | 24 GB | 32 GB | 48 GB | Highest-quality and slowest processing |
 | `maximum-experimental` | HYPIR-SD2 | PyTorch MPS, experimental | 24 GB | 32 GB | 48 GB | Maximum-tier opt-in generative restoration with strong detail reconstruction and adjustable texture richness |
+| `photo-restore` | SCUNet real-world (fidelity and GAN weights) | PyTorch MPS via Spandrel | 8 GB | 16 GB | 24 GB | General cleanup of noise, compression artifacts, and mild blur at the original size |
 | `deblur-motion` | Restormer Motion Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Camera shake, subject movement, and directional motion blur |
 | `deblur-defocus` | Restormer Single-Image Defocus Deblurring | PyTorch MPS | 16 GB | 24 GB | 32 GB | Out-of-focus and lens-related blur |
 | `face-restore` | CodeFormer v0.1.0 | PyTorch MPS via Vivid adapter | 8 GB | 16 GB | 24 GB | Detected-face restoration with an adjustable reconstruction/fidelity trade-off |
@@ -161,7 +172,9 @@ HYPIR processes the requested output dimensions directly. Its `natural`, `balanc
 
 Maximum Experimental is an opt-in HYPIR-SD2 path. It may reconstruct plausible detail that was not present in the source, so avoid it for facial identity, text, or documentary-critical work. The official HYPIR implementation documents CUDA rather than Apple Silicon MPS; Vivid's MPS integration remains experimental. HYPIR's official repository also restricts commercial use without separate permission, even though its model repository displays an Apache 2.0 label; review and follow the more restrictive terms before enabling it in a commercial product.
 
-The two Restormer entries and CodeFormer are optional preprocessors, not upscale modes. Choose Motion Blur or Out of Focus in the app; Vivid does not guess when the blur type is uncertain. Processing order is deblur, then face restoration, then the selected upscale mode. Each preprocessor preserves the full image dimensions.
+Photo Restore, the two Restormer entries, and CodeFormer are optional preprocessors, not upscale modes. Choose Motion Blur or Out of Focus in the app; Vivid does not guess when the blur type is uncertain. Processing order is photo restore, then deblur, then face restoration, then the selected upscale mode. Each preprocessor preserves the full image dimensions. To run only the enhancements, choose **Size > Original** in the app or pass `--no-upscale`.
+
+Photo Restore is designed to stay faithful to the photo. SCUNet removes noise, JPEG blocking and ringing, and mild blur, but Vivid keeps the source's coarse wavelet band, so exposure, white balance, and color always come from the original; only fine detail is replaced. `gentle` (strength 0.60) keeps some grain, `balanced` (0.85) is the default, and `strong` (1.00) switches to SCUNet's GAN weights for crisper reconstructed texture on heavily degraded photos. It does not repair scratches, tears, or fading. SCUNet is Apache 2.0 licensed. See [MODELS.md](MODELS.md#photo-restore-presets) for details.
 
 CodeFormer is disabled by default. Its Balanced preset uses a fidelity weight of 0.7; Enhance uses 0.4 for stronger reconstruction, while Faithful uses 0.9 for closer identity preservation. If no eligible face is detected, Vivid leaves the image unchanged before upscaling. Review identity-sensitive details carefully. CodeFormer uses the NTU S-Lab License 1.0, so review its redistribution and commercial-use terms before shipping it in a product.
 
@@ -180,6 +193,8 @@ App output is written beside the input, or to a folder chosen under **Output > S
 ```text
 portrait-vivid-upscale-normal-2x.jpg
 portrait-vivid-upscale-normal-deblur-motion-2x.jpg
+portrait-vivid-upscale-normal-photo-restore-2x.jpg
+portrait-vivid-photo-restore-original.jpg
 portrait-vivid-upscale-advanced-2048px.webp
 ```
 
@@ -194,6 +209,7 @@ portrait-vivid-upscale-advanced-2048px.webp
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus-anime-6B
 ~/.local/share/vivid/models/nomos-webphoto-esrgan
+~/.local/share/vivid/models/scunet
 ~/.local/share/vivid/models/restormer/motion
 ~/.local/share/vivid/models/restormer/defocus
 ```

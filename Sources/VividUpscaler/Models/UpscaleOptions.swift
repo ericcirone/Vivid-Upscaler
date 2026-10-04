@@ -53,9 +53,19 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
 enum SizingKind: String, CaseIterable, Identifiable {
     case scale
     case resolution
+    /// Keep the source dimensions and skip the upscaling model entirely, so
+    /// only the enabled enhancements run.
+    case original
 
     var id: String { rawValue }
-    var title: String { self == .scale ? "Scale" : "Resolution" }
+
+    var title: String {
+        switch self {
+        case .scale: "Scale"
+        case .resolution: "Resolution"
+        case .original: "Original"
+        }
+    }
 }
 
 enum OutputFormat: String, CaseIterable, Identifiable {
@@ -130,6 +140,7 @@ struct UpscaleOptions {
     static let defaultNoiseReduction = 0.5
 
     var mode: UpscaleMode
+    var photoRestoreOptions: PhotoRestoreOptions = .init()
     var deblurMode: DeblurMode = .none
     var codeFormerOptions: CodeFormerOptions = .init()
     var generativeOptions: GenerativeOptions = .init()
@@ -144,8 +155,17 @@ struct UpscaleOptions {
     var quality: Double
 
     var preprocessingPipeline: PreprocessingPipeline {
-        PreprocessingPipeline(deblurMode: deblurMode, codeFormerOptions: codeFormerOptions)
+        PreprocessingPipeline(
+            photoRestoreOptions: photoRestoreOptions,
+            deblurMode: deblurMode,
+            codeFormerOptions: codeFormerOptions
+        )
     }
+
+    /// Whether the selected upscaling model runs at all.
+    var upscales: Bool { sizingKind != .original }
+
+    var hasEnhancements: Bool { !preprocessingPipeline.steps.isEmpty }
 
     var sizingToken: String {
         switch sizingKind {
@@ -154,6 +174,8 @@ struct UpscaleOptions {
             return "\(value)x"
         case .resolution:
             return "\(resolution)px"
+        case .original:
+            return "original"
         }
     }
 
@@ -165,9 +187,14 @@ struct UpscaleOptions {
 
     func outputURL(for inputURL: URL, in directory: URL? = nil) -> URL {
         let ext = format.fileExtension(for: inputURL)
+        let photoRestoreToken = photoRestoreOptions.isEnabled ? "-photo-restore" : ""
         let deblurToken = deblurMode == .none ? "" : "-\(deblurMode.rawValue)"
         let faceRestoreToken = codeFormerOptions.isEnabled ? "-face-restore" : ""
-        let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)\(deblurToken)\(faceRestoreToken)-\(sizingToken).\(ext)"
+        let enhancementTokens = "\(photoRestoreToken)\(deblurToken)\(faceRestoreToken)"
+        let stem = inputURL.deletingPathExtension().lastPathComponent
+        let filename = upscales
+            ? "\(stem)-vivid-upscale-\(mode.rawValue)\(enhancementTokens)-\(sizingToken).\(ext)"
+            : "\(stem)-vivid\(enhancementTokens)-\(sizingToken).\(ext)"
         return (directory ?? inputURL.deletingLastPathComponent()).appendingPathComponent(filename)
     }
 
@@ -188,6 +215,8 @@ struct UpscaleOptions {
             guard resolution > 0, maxResolution > 0 else { return nil }
             shortEdge = Double(resolution)
             maxLongEdge = Double(maxResolution)
+        case .original:
+            return CGSize(width: source.width.rounded(), height: source.height.rounded())
         }
         var factor = shortEdge / shortSide
         if longSide * factor > maxLongEdge {

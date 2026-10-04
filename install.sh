@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="28"
+RUNTIME_VERSION="29"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -113,6 +113,21 @@ DEBLUR_MODELS = {
     },
 }
 
+# SCUNet was trained on randomly shuffled real-world degradations (sensor
+# noise, JPEG compression, blur, and resizing) and restores at 1x. The PSNR
+# weights favor fidelity; the GAN weights reconstruct crisper texture.
+RESTORE_MODELS = {
+    "natural": {
+        "display_name": "SCUNet real-world (fidelity)",
+        "filename": "scunet_color_real_psnr.pth",
+    },
+    "sharp": {
+        "display_name": "SCUNet real-world (GAN detail)",
+        "filename": "scunet_color_real_gan.pth",
+    },
+}
+RESTORE_DOWNLOAD_DIR = "scunet"
+
 # Formats every model path can read directly. Anything else, and any image
 # with a non-default EXIF orientation, is normalized to an upright PNG first.
 DIRECT_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -157,6 +172,12 @@ def choose_tile_size(
     # passes independently of the later upscaler's memory policy.
     if mode == "deblur":
         return 512 if system_ram_gb >= 24 else 384
+    # SCUNet's Swin blocks hold several full-resolution feature maps. Tiles
+    # cost little here and keep memory flat regardless of photo size.
+    if mode == "restore":
+        if width * height <= 1_000_000:
+            return 0
+        return 512 if system_ram_gb >= 16 else 384
 
     native_megapixels = width * height * native_scale * native_scale / 1_000_000
     long_edge = max(width, height) * native_scale
@@ -334,7 +355,12 @@ def infer_tiled(
     return output
 
 
-def run_spandrel_model(weight_path: Path, image: Image.Image, tile_size: int) -> tuple[np.ndarray, int]:
+def run_spandrel_model(
+    weight_path: Path,
+    image: Image.Image,
+    tile_size: int,
+    tile_pad: int = 24,
+) -> tuple[np.ndarray, int]:
     global torch, ImageModelDescriptor, ModelLoader, EXTRA_ARCHES_INSTALLED
     import torch
     import spandrel_extra_arches
@@ -356,7 +382,7 @@ def run_spandrel_model(weight_path: Path, image: Image.Image, tile_size: int) ->
     scale = int(model.scale)
     input_tensor = pil_to_tensor(image)
     if tile_size:
-        output = infer_tiled(model, input_tensor, device, scale, tile_size)
+        output = infer_tiled(model, input_tensor, device, scale, tile_size, tile_pad)
     else:
         print("      Processing full image...", flush=True)
         output = infer_full(model, input_tensor, device)
@@ -382,6 +408,67 @@ def deblur_image(
     if scale != 1:
         raise RuntimeError(f"Restormer reported an unexpected {scale}x output scale")
     return Image.fromarray(output, mode="RGB")
+
+
+def wavelet_low_frequency(image: np.ndarray, levels: int = 5) -> np.ndarray:
+    """Return the coarsest band of an a-trous wavelet decomposition (HxWxC)."""
+    import cv2
+
+    kernel = np.array([0.25, 0.5, 0.25], dtype=np.float32)
+    low = image
+    for level in range(levels):
+        radius = 2**level
+        dilated = np.zeros(2 * radius + 1, dtype=np.float32)
+        dilated[::radius] = kernel
+        low = cv2.sepFilter2D(low, -1, dilated, dilated, borderType=cv2.BORDER_REPLICATE)
+    return low
+
+
+def anchor_restoration(source: np.ndarray, restored: np.ndarray, strength: float) -> np.ndarray:
+    """Keep the source's tones and colors while taking cleaned-up detail.
+
+    The result is source_low + lerp(source_high, restored_high, strength).
+    Because the wavelet split is linear this equals
+    source + strength * (delta - low(delta)), where delta = restored - source,
+    so only one extra full-size buffer is decomposed. Coarse brightness and
+    color always come from the original photo, which stops the model from
+    shifting exposure or white balance, while strength controls how much of
+    the source's fine noise and grain is replaced.
+    """
+    source_float = source.astype(np.float32)
+    delta = restored.astype(np.float32)
+    delta -= source_float
+    delta -= wavelet_low_frequency(delta)
+    delta *= strength
+    source_float += delta
+    return np.clip(source_float + 0.5, 0, 255).astype(np.uint8)
+
+
+def restore_photo(
+    image: Image.Image,
+    detail: str,
+    strength: float,
+    model_root: Path,
+    tile_mode: str,
+    system_ram_gb: int,
+) -> Image.Image:
+    spec = RESTORE_MODELS[detail]
+    weight_path = model_root / RESTORE_DOWNLOAD_DIR / spec["filename"]
+    width, height = image.size
+    tile_size = choose_tile_size(tile_mode, width, height, 1, "restore", system_ram_gb)
+    tile_note = "off" if tile_size == 0 else f"on ({tile_size}px)"
+    print("      Restoring photo", flush=True)
+    print(f"      Model:  {spec['display_name']} via PyTorch MPS", flush=True)
+    print(f"      Restoration strength: {strength:.2f}", flush=True)
+    print(f"      Tiling: {tile_note}", flush=True)
+    # SCUNet's shifted windows and U-Net context reach well past 24 px, so
+    # give each tile a wider margin to keep seams invisible in flat skies.
+    output, scale = run_spandrel_model(weight_path, image, tile_size, tile_pad=48)
+    if scale != 1:
+        raise RuntimeError(f"SCUNet reported an unexpected {scale}x output scale")
+    print("      Preserving source tones and color", flush=True)
+    result = anchor_restoration(np.asarray(image.convert("RGB")), output, strength)
+    return Image.fromarray(result, mode="RGB")
 
 
 def jxl_distance_from_quality(quality: int) -> float:
@@ -589,6 +676,9 @@ def main() -> int:
     parser.add_argument("--prepare-input", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--finalize-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--deblur-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--restore-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--restore-detail", choices=sorted(RESTORE_MODELS), default="natural", help=argparse.SUPPRESS)
+    parser.add_argument("--restore-strength", type=float, default=0.85, help=argparse.SUPPRESS)
     parser.add_argument("--metadata-source", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -601,7 +691,9 @@ def main() -> int:
         parser.error("--denoise-strength must be between 0 and 1")
     if args.model_root is None and not args.finalize_only:
         parser.error("--model-root is required")
-    if not args.deblur_only and (args.short_edge is None or args.max_long_edge is None):
+    if not 0 <= args.restore_strength <= 1:
+        parser.error("--restore-strength must be between 0 and 1")
+    if not (args.deblur_only or args.restore_only) and (args.short_edge is None or args.max_long_edge is None):
         parser.error("--short-edge and --max-long-edge are required")
 
     metadata_path = Path(args.metadata_source) if args.metadata_source else input_path
@@ -623,6 +715,19 @@ def main() -> int:
 
     with Image.open(input_path) as opened:
         image = to_display_rgb(ImageOps.exif_transpose(opened))
+
+    if args.restore_only:
+        result = restore_photo(
+            image,
+            args.restore_detail,
+            args.restore_strength,
+            Path(args.model_root),
+            args.tile,
+            args.system_ram_gb,
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        result.save(output_path, format="PNG")
+        return 0
 
     if args.deblur_only:
         if args.deblur == "none":
@@ -1239,6 +1344,9 @@ model_is_installed() {
     deblur-defocus)
       [[ -f "$MODEL_ROOT/restormer/defocus/single_image_defocus_deblurring.pth" ]]
       ;;
+    photo-restore)
+      [[ -f "$MODEL_ROOT/scunet/scunet_color_real_psnr.pth" && -f "$MODEL_ROOT/scunet/scunet_color_real_gan.pth" ]]
+      ;;
     face-restore)
       [[ -f "$MODEL_ROOT/codeformer/codeformer.pth" \
         && -f "$MODEL_ROOT/codeformer/detection_Resnet50_Final.pth" \
@@ -1339,7 +1447,7 @@ system_ram_gb() {
 
 minimum_ram_for_model() {
   case "$1" in
-    fast|art|face-restore) echo 8 ;;
+    fast|art|photo-restore|face-restore) echo 8 ;;
     normal|normal-hq|advanced|deblur-motion|deblur-defocus) echo 16 ;;
     maximum|maximum-experimental) echo 24 ;;
     *) echo 0 ;;
@@ -1350,7 +1458,7 @@ if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; NORMAL_HQ=false; ART=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false; FACE_RESTORE=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; ART=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; PHOTO_RESTORE=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false; FACE_RESTORE=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
         model_is_installed normal-hq && NORMAL_HQ=true
@@ -1358,12 +1466,13 @@ if [[ "${1:-}" == "models" ]]; then
         model_is_installed advanced && ADVANCED=true
         model_is_installed maximum && MAXIMUM=true
         model_is_installed maximum-experimental && MAXIMUM_EXPERIMENTAL=true
+        model_is_installed photo-restore && PHOTO_RESTORE=true
         model_is_installed deblur-motion && DEBLUR_MOTION=true
         model_is_installed deblur-defocus && DEBLUR_DEFOCUS=true
         model_is_installed face-restore && FACE_RESTORE=true
-        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"art":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"deblur-motion":%s,"deblur-defocus":%s,"face-restore":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ART" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS" "$FACE_RESTORE"
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"art":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"photo-restore":%s,"deblur-motion":%s,"deblur-defocus":%s,"face-restore":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ART" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$PHOTO_RESTORE" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS" "$FACE_RESTORE"
       else
-        for MODEL_ID in fast normal normal-hq art advanced maximum maximum-experimental deblur-motion deblur-defocus face-restore; do
+        for MODEL_ID in fast normal normal-hq art advanced maximum maximum-experimental photo-restore deblur-motion deblur-defocus face-restore; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -1417,6 +1526,14 @@ if [[ "${1:-}" == "models" ]]; then
           download_model_file \
             "https://huggingface.co/mlx-community/Real-ESRGAN-x4plus-anime-6B/resolve/main/config.json" \
             "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B/config.json"
+          ;;
+        photo-restore)
+          download_model_file \
+            "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_psnr.pth" \
+            "$MODEL_ROOT/scunet/scunet_color_real_psnr.pth"
+          download_model_file \
+            "https://github.com/cszn/KAIR/releases/download/v1.0/scunet_color_real_gan.pth" \
+            "$MODEL_ROOT/scunet/scunet_color_real_gan.pth"
           ;;
         deblur-motion)
           download_model_file \
@@ -1661,7 +1778,7 @@ test_path.write_text(test_source)
 PY
           ;;
         *)
-          echo "Usage: vvd models install fast|normal|normal-hq|art|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|art|advanced|maximum|maximum-experimental|photo-restore|deblur-motion|deblur-defocus|face-restore" >&2
           exit 2
           ;;
       esac
@@ -1676,11 +1793,12 @@ PY
         normal-hq) rm -rf "$MODEL_ROOT/nomos-webphoto-esrgan" ;;
         art) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B" ;;
         maximum-experimental) rm -rf "$MODEL_ROOT/HYPIR" "$INSTALL_ROOT/HYPIR-source" ;;
+        photo-restore) rm -rf "$MODEL_ROOT/scunet" ;;
         deblur-motion) rm -rf "$MODEL_ROOT/restormer/motion" ;;
         deblur-defocus) rm -rf "$MODEL_ROOT/restormer/defocus" ;;
         face-restore) rm -rf "$MODEL_ROOT/codeformer" "$CODEFORMER_ROOT" ;;
         advanced|maximum) rm -rf "$MODEL_ROOT/SEEDVR2" ;;
-        *) echo "Usage: vvd models delete fast|normal|normal-hq|art|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2; exit 2 ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|art|advanced|maximum|maximum-experimental|photo-restore|deblur-motion|deblur-defocus|face-restore" >&2; exit 2 ;;
       esac
       echo "Deleted model: $MODEL_ID"
       exit 0
@@ -1703,6 +1821,8 @@ Examples:
   vvd photo.jpg enhanced.png --scale 2
   vvd photo.heic --format jpg --mode normal-hq
   vvd drawing.png --mode art --scale 4
+  vvd old-photo.jpg --photo-restore --scale 2
+  vvd noisy.jpg --photo-restore --no-upscale
   vvd ~/Pictures/Trip --output-dir ~/Pictures/Trip-Upscaled --scale 2
   vvd *.jpg --output-dir upscaled --mode fast --skip-existing
   vvd models status
@@ -1718,7 +1838,8 @@ Modes:
   maximum-experimental
             Maximum-tier experimental HYPIR-SD2 generative restoration via PyTorch MPS.
 
-Optional preprocessing:
+Optional preprocessing (runs in this order before upscaling):
+  photo-restore   SCUNet cleanup of noise, JPEG artifacts, and mild blur at the original size.
   deblur-motion   Restormer correction for camera shake, movement, and directional blur.
   deblur-defocus  Restormer correction for out-of-focus and lens blur.
   face-restore    CodeFormer restoration for detected faces via PyTorch MPS.
@@ -1727,6 +1848,14 @@ Options:
   --mode MODE                  fast, normal, normal-hq, art, advanced, maximum, or maximum-experimental
   --fast, --normal, --normal-hq, --art, --advanced, --maximum, --maximum-experimental
                                Aliases for --mode
+  --photo-restore              Clean up noise, compression, and mild blur first, keeping
+                               the photo's original tones and colors.
+  --restore-preset PRESET      gentle, balanced, strong, or custom. Default: balanced
+  --restore-strength N         Custom share of source fine detail replaced, 0 to 1. Default: 0.85
+  --restore-detail natural|sharp
+                               Custom fidelity-trained or GAN-trained weights. Default: natural
+  --no-upscale                 Skip the upscaling model and keep the source dimensions.
+                               Requires --photo-restore, --deblur, or --face-restore.
   --deblur none|deblur-motion|deblur-defocus
                                Optional Restormer pass before upscaling. Default: none
   --face-restore               Restore detected faces after deblur and before upscaling.
@@ -1762,7 +1891,8 @@ Options:
 Inputs may be PNG, JPEG, WebP, HEIC/HEIF, AVIF, JPEG XL, TIFF, BMP, or GIF.
 A bare output filename such as output.jpg is saved beside the input file.
 Use ./output.jpg to explicitly save in the current working directory.
-Without OUTPUT, Vivid writes NAME_upscaled.EXT beside the input (or in --output-dir).
+Without OUTPUT, Vivid writes NAME_upscaled.EXT beside the input (or in --output-dir);
+--no-upscale writes NAME_restored.EXT instead.
 Batch mode starts when --output-dir is given, an input is a folder, or more than
 two paths are given. Folders are not searched recursively. Each image is processed
 in turn and the batch continues after an individual failure.
@@ -1807,13 +1937,14 @@ default_output_extension() {
   esac
 }
 
-VALUE_OPTIONS=" --mode --deblur --codeformer-preset --codeformer-fidelity --scale --multiplier --resolution --max-resolution --tile --denoise-strength --quality --seed --seedvr2-preset --input-noise-scale --latent-noise-scale --color-correction --hypir-preset --hypir-restoration-strength --hypir-patch-size --hypir-patch-stride --hypir-prompt --progress-interval "
+VALUE_OPTIONS=" --mode --deblur --restore-preset --restore-strength --restore-detail --codeformer-preset --codeformer-fidelity --scale --multiplier --resolution --max-resolution --tile --denoise-strength --quality --seed --seedvr2-preset --input-noise-scale --latent-noise-scale --color-correction --hypir-preset --hypir-restoration-strength --hypir-patch-size --hypir-patch-stride --hypir-prompt --progress-interval "
 POSITIONALS=()
 PASSTHROUGH=()
 BATCH_OUTPUT_DIR=""
 BATCH_REQUESTED="0"
 SKIP_EXISTING="0"
 OUTPUT_FORMAT=""
+OUTPUT_SUFFIX="upscaled"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output-dir)
@@ -1831,6 +1962,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       exec "$0"
+      ;;
+    --no-upscale)
+      OUTPUT_SUFFIX="restored"
+      PASSTHROUGH+=("$1")
+      shift
       ;;
     --*)
       PASSTHROUGH+=("$1")
@@ -1878,7 +2014,7 @@ if [[ "$BATCH_REQUESTED" == "1" ]]; then
         if is_supported_input "$CANDIDATE"; then
           BATCH_INPUTS+=("$CANDIDATE")
         fi
-      done < <(find "$POSITIONAL" -maxdepth 1 -type f ! -name '.*' ! -name '*_upscaled.*' -print0 | sort -z)
+      done < <(find "$POSITIONAL" -maxdepth 1 -type f ! -name '.*' ! -name '*_upscaled.*' ! -name '*_restored.*' -print0 | sort -z)
     elif [[ -f "$POSITIONAL" ]]; then
       if is_supported_input "$POSITIONAL"; then
         BATCH_INPUTS+=("$POSITIONAL")
@@ -1908,7 +2044,7 @@ if [[ "$BATCH_REQUESTED" == "1" ]]; then
     BATCH_NAME="$(basename "$BATCH_INPUT")"
     BATCH_EXTENSION="${OUTPUT_FORMAT:-$(default_output_extension "${BATCH_NAME##*.}")}"
     BATCH_DIR="${BATCH_OUTPUT_DIR:-$(dirname "$BATCH_INPUT")}"
-    BATCH_OUTPUT="$BATCH_DIR/${BATCH_NAME%.*}_upscaled.$BATCH_EXTENSION"
+    BATCH_OUTPUT="$BATCH_DIR/${BATCH_NAME%.*}_$OUTPUT_SUFFIX.$BATCH_EXTENSION"
     echo "[batch] $BATCH_INDEX/$BATCH_TOTAL $BATCH_NAME"
     if [[ "$SKIP_EXISTING" == "1" && -e "$BATCH_OUTPUT" ]]; then
       echo "        Skipped: $BATCH_OUTPUT already exists"
@@ -1930,7 +2066,7 @@ if [[ "$BATCH_REQUESTED" == "1" ]]; then
       BATCH_FAILED=$((BATCH_FAILED + 1))
     fi
   done
-  echo "[batch] Complete: $BATCH_DONE upscaled, $BATCH_SKIPPED skipped, $BATCH_FAILED failed"
+  echo "[batch] Complete: $BATCH_DONE $OUTPUT_SUFFIX, $BATCH_SKIPPED skipped, $BATCH_FAILED failed"
   if [[ "$BATCH_FAILED" -gt 0 ]]; then
     exit 1
   fi
@@ -1972,6 +2108,13 @@ DENOISE_STRENGTH="0.5"
 QUALITY="90"
 DEBLUR="none"
 FACE_RESTORE="0"
+PHOTO_RESTORE="0"
+RESTORE_PRESET="balanced"
+RESTORE_STRENGTH=""
+RESTORE_DETAIL=""
+RESTORE_CUSTOM_SETTINGS_REQUESTED="0"
+NO_UPSCALE="0"
+SIZE_REQUESTED="0"
 CODEFORMER_PRESET="balanced"
 CODEFORMER_FIDELITY=""
 
@@ -2017,6 +2160,28 @@ while [[ $# -gt 0 ]]; do
       FACE_RESTORE="1"
       shift
       ;;
+    --photo-restore)
+      PHOTO_RESTORE="1"
+      shift
+      ;;
+    --restore-preset)
+      RESTORE_PRESET="${2:?Missing value for --restore-preset}"
+      shift 2
+      ;;
+    --restore-strength)
+      RESTORE_STRENGTH="${2:?Missing value for --restore-strength}"
+      RESTORE_CUSTOM_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --restore-detail)
+      RESTORE_DETAIL="${2:?Missing value for --restore-detail}"
+      RESTORE_CUSTOM_SETTINGS_REQUESTED="1"
+      shift 2
+      ;;
+    --no-upscale)
+      NO_UPSCALE="1"
+      shift
+      ;;
     --codeformer-preset)
       CODEFORMER_PRESET="${2:?Missing value for --codeformer-preset}"
       shift 2
@@ -2031,14 +2196,17 @@ while [[ $# -gt 0 ]]; do
       ;;
     --scale|--multiplier)
       SCALE="${2:?Missing value for $1}"
+      SIZE_REQUESTED="1"
       shift 2
       ;;
     --resolution)
       RESOLUTION="${2:?Missing value for --resolution}"
+      SIZE_REQUESTED="1"
       shift 2
       ;;
     --max-resolution)
       MAX_RESOLUTION="${2:?Missing value for --max-resolution}"
+      SIZE_REQUESTED="1"
       shift 2
       ;;
     --tile)
@@ -2138,6 +2306,66 @@ case "$DEBLUR" in
     exit 2
     ;;
 esac
+
+case "$RESTORE_PRESET" in
+  gentle)
+    RESTORE_STRENGTH="0.60"
+    RESTORE_DETAIL="natural"
+    ;;
+  balanced)
+    RESTORE_STRENGTH="0.85"
+    RESTORE_DETAIL="natural"
+    ;;
+  strong)
+    RESTORE_STRENGTH="1.00"
+    RESTORE_DETAIL="sharp"
+    ;;
+  custom)
+    : "${RESTORE_STRENGTH:=0.85}"
+    : "${RESTORE_DETAIL:=natural}"
+    ;;
+  *)
+    echo "--restore-preset must be gentle, balanced, strong, or custom" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$RESTORE_CUSTOM_SETTINGS_REQUESTED" == "1" && "$RESTORE_PRESET" != "custom" ]]; then
+  echo "--restore-strength and --restore-detail require --restore-preset custom" >&2
+  exit 2
+fi
+
+case "$RESTORE_DETAIL" in
+  natural|sharp) ;;
+  *)
+    echo "--restore-detail must be natural or sharp" >&2
+    exit 2
+    ;;
+esac
+
+if ! "$PYTHON" - "$RESTORE_STRENGTH" <<'PY'
+import sys
+try:
+    value = float(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+raise SystemExit(0 if 0.0 <= value <= 1.0 else 1)
+PY
+then
+  echo "--restore-strength must be a number from 0 to 1" >&2
+  exit 2
+fi
+
+if [[ "$NO_UPSCALE" == "1" ]]; then
+  if [[ "$PHOTO_RESTORE" != "1" && "$DEBLUR" == "none" && "$FACE_RESTORE" != "1" ]]; then
+    echo "--no-upscale requires --photo-restore, --deblur, or --face-restore" >&2
+    exit 2
+  fi
+  if [[ "$SIZE_REQUESTED" == "1" ]]; then
+    echo "--no-upscale keeps the source dimensions; remove --scale, --resolution, and --max-resolution" >&2
+    exit 2
+  fi
+fi
 
 case "$CODEFORMER_PRESET" in
   enhance) : "${CODEFORMER_FIDELITY:=0.4}" ;;
@@ -2293,9 +2521,23 @@ fi
 
 AVAILABLE_RAM="$(system_ram_gb)"
 REQUIRED_RAM="$(minimum_ram_for_model "$MODE")"
+if [[ "$NO_UPSCALE" == "1" ]]; then
+  REQUIRED_RAM=0
+fi
 if (( AVAILABLE_RAM > 0 && REQUIRED_RAM > AVAILABLE_RAM )); then
   echo "$MODE requires at least $REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
   exit 1
+fi
+if [[ "$PHOTO_RESTORE" == "1" ]]; then
+  PHOTO_RESTORE_REQUIRED_RAM="$(minimum_ram_for_model photo-restore)"
+  if (( AVAILABLE_RAM > 0 && PHOTO_RESTORE_REQUIRED_RAM > AVAILABLE_RAM )); then
+    echo "photo-restore requires at least $PHOTO_RESTORE_REQUIRED_RAM GB RAM; this Mac has $AVAILABLE_RAM GB." >&2
+    exit 1
+  fi
+  if ! model_is_installed photo-restore; then
+    echo "photo-restore is not installed. Run: vvd models install photo-restore" >&2
+    exit 1
+  fi
 fi
 if [[ "$DEBLUR" != "none" ]]; then
   DEBLUR_REQUIRED_RAM="$(minimum_ram_for_model "$DEBLUR")"
@@ -2319,7 +2561,7 @@ if [[ "$FACE_RESTORE" == "1" ]]; then
     exit 1
   fi
 fi
-if ! model_is_installed "$MODE"; then
+if [[ "$NO_UPSCALE" != "1" ]] && ! model_is_installed "$MODE"; then
   echo "$MODE is not installed. Run: vvd models install $MODE" >&2
   exit 1
 fi
@@ -2362,7 +2604,7 @@ fi
 if [[ -z "$OUTPUT" ]]; then
   INPUT_NAME="$(basename "$INPUT")"
   OUTPUT_EXTENSION="${OUTPUT_FORMAT:-$(default_output_extension "${INPUT_NAME##*.}")}"
-  OUTPUT="$(dirname "$INPUT")/${INPUT_NAME%.*}_upscaled.$OUTPUT_EXTENSION"
+  OUTPUT="$(dirname "$INPUT")/${INPUT_NAME%.*}_$OUTPUT_SUFFIX.$OUTPUT_EXTENSION"
 fi
 case "$(lowercase "${OUTPUT##*.}")" in
   png|jpg|jpeg|webp|jxl|avif|tif|tiff) ;;
@@ -2418,6 +2660,9 @@ if [[ "$SOURCE_NORMALIZED" == "1" ]]; then
   SOURCE_INPUT="$WORK_DIR/source.png"
 fi
 
+if [[ "$NO_UPSCALE" == "1" ]]; then
+  SCALE="1"
+fi
 if [[ -n "$SCALE" ]]; then
   read -r RESOLUTION MAX_RESOLUTION <<< "$(awk -v width="$SOURCE_WIDTH" -v height="$SOURCE_HEIGHT" -v scale="$SCALE" '
     function rounded(value) { value = int(value + 0.5); return value < 1 ? 1 : value }
@@ -2447,11 +2692,15 @@ if [[ "$MODE" == "advanced" || "$MODE" == "maximum" ]]; then
         ADVANCED_TILE_NOTE="on"
       else
         ADVANCED_PIXELS=$((ADVANCED_TARGET_WIDTH * ADVANCED_TARGET_HEIGHT))
-        # Advanced processes 36% fewer pixels. Avoid tiled VAE overhead for
-        # conservatively safe jobs, while retaining the lower-memory path for
-        # larger images and 16 GB systems.
-        if (( (AVAILABLE_RAM >= 32 && ADVANCED_PIXELS <= 8000000)
-            || (AVAILABLE_RAM >= 24 && ADVANCED_PIXELS <= 4000000) )); then
+        # Advanced processes 36% fewer pixels. Avoid tiled VAE overhead only
+        # where the untiled decode fits comfortably. On a 24 GB Mac a 2.7 MP
+        # untiled decode exhausts Metal memory, 2.4 MP runs under heavy memory
+        # pressure (slower than the tiled path), and 1.7 MP is safe and fast.
+        # Larger systems scale from that measurement with the same headroom.
+        if (( (AVAILABLE_RAM >= 64 && ADVANCED_PIXELS <= 4500000)
+            || (AVAILABLE_RAM >= 48 && ADVANCED_PIXELS <= 3500000)
+            || (AVAILABLE_RAM >= 32 && ADVANCED_PIXELS <= 2500000)
+            || (AVAILABLE_RAM >= 24 && ADVANCED_PIXELS <= 1750000) )); then
           ADVANCED_TILE_NOTE="off"
         else
           ADVANCED_TILE_NOTE="on"
@@ -2494,15 +2743,22 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
   else
     echo "      Output: auto-generated beside the input"
   fi
-  echo "      Mode:   $MODE"
+  if [[ "$NO_UPSCALE" == "1" ]]; then
+    echo "      Mode:   enhancements only (no upscaling)"
+  else
+    echo "      Mode:   $MODE"
+  fi
   echo "      Source: ${SOURCE_WIDTH}x${SOURCE_HEIGHT}"
+  if [[ "$PHOTO_RESTORE" == "1" ]]; then
+    echo "      Photo restore: SCUNet $RESTORE_PRESET ($RESTORE_DETAIL detail, strength $RESTORE_STRENGTH)"
+  fi
   if [[ "$DEBLUR" != "none" ]]; then
     echo "      Deblur: $DEBLUR"
   fi
   if [[ "$FACE_RESTORE" == "1" ]]; then
     echo "      Face restore: CodeFormer $CODEFORMER_PRESET (fidelity $CODEFORMER_FIDELITY)"
   fi
-  case "$MODE" in
+  case "$([[ "$NO_UPSCALE" == "1" ]] && echo none || echo "$MODE")" in
     advanced)
       echo "      Model:  SeedVR2 3B 8-bit via native MLX at 80% internal scale"
       echo "      SeedVR2 models: $MODEL_ROOT/SEEDVR2"
@@ -2546,17 +2802,41 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
       echo "      Denoise strength: $DENOISE_STRENGTH"
       ;;
   esac
-  echo "      Target: short edge $RESOLUTION px, long edge up to $MAX_RESOLUTION px"
+  if [[ "$NO_UPSCALE" == "1" ]]; then
+    echo "      Target: original size (${SOURCE_WIDTH}x${SOURCE_HEIGHT})"
+  else
+    echo "      Target: short edge $RESOLUTION px, long edge up to $MAX_RESOLUTION px"
+  fi
 fi
 
 START_SECONDS=$SECONDS
 
 PROCESSING_INPUT="$SOURCE_INPUT"
+# Restore first: deblurring and face detection both behave better on a photo
+# whose noise and compression artifacts have already been removed.
+if [[ "$PHOTO_RESTORE" == "1" ]]; then
+  PHOTO_RESTORE_OUTPUT="$WORK_DIR/photo-restore.png"
+  set +e
+  run_step "$PYTHON" -u "$UPSCALE_HELPER" \
+    "$SOURCE_INPUT" "$PHOTO_RESTORE_OUTPUT" \
+    --model-root "$MODEL_ROOT" \
+    --restore-only \
+    --restore-detail "$RESTORE_DETAIL" \
+    --restore-strength "$RESTORE_STRENGTH" \
+    --tile "$TILE_MODE" \
+    --system-ram-gb "$AVAILABLE_RAM"
+  STATUS=$?
+  set -e
+  if [[ "$STATUS" -ne 0 ]]; then
+    exit "$STATUS"
+  fi
+  PROCESSING_INPUT="$PHOTO_RESTORE_OUTPUT"
+fi
 if [[ "$DEBLUR" != "none" ]]; then
   DEBLUR_OUTPUT="$WORK_DIR/deblur.png"
   set +e
   run_step "$PYTHON" -u "$UPSCALE_HELPER" \
-    "$INPUT" "$DEBLUR_OUTPUT" \
+    "$PROCESSING_INPUT" "$DEBLUR_OUTPUT" \
     --model-root "$MODEL_ROOT" \
     --mode fast \
     --deblur "$DEBLUR" \
@@ -2587,7 +2867,23 @@ if [[ "$FACE_RESTORE" == "1" ]]; then
   PROCESSING_INPUT="$FACE_RESTORE_OUTPUT"
 fi
 
-if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" || "$MODE" == "art" ]]; then
+if [[ "$NO_UPSCALE" == "1" ]]; then
+  if [[ "$SHOW_PROGRESS" == "1" ]]; then
+    echo "[progress] 92% Finalizing output"
+  fi
+  # Finalization copies metadata, the ICC profile, and alpha from INPUT at the
+  # original dimensions; the work-directory intermediate is removed on exit.
+  set +e
+  run_step "$PYTHON" -u "$UPSCALE_HELPER" \
+    "$PROCESSING_INPUT" "$OUTPUT" \
+    --short-edge "$RESOLUTION" \
+    --max-long-edge "$MAX_RESOLUTION" \
+    --quality "$QUALITY" \
+    --finalize-only \
+    --metadata-source "$INPUT"
+  STATUS=$?
+  set -e
+elif [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" || "$MODE" == "art" ]]; then
   set +e
   run_step "$PYTHON" -u "$UPSCALE_HELPER" \
     "$PROCESSING_INPUT" "$OUTPUT" \

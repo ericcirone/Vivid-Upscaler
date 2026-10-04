@@ -52,6 +52,10 @@ final class UpscaleStore {
     // MARK: Options
 
     var mode: UpscaleMode
+    var photoRestoreEnabled: Bool
+    var photoRestorePreset: PhotoRestorePreset
+    var photoRestoreStrength: Double
+    var photoRestoreDetail: PhotoRestoreDetail
     var deblurMode: DeblurMode
     var faceRestoreEnabled: Bool
     var codeFormerPreset: CodeFormerPreset
@@ -104,6 +108,10 @@ final class UpscaleStore {
     init(systemMemoryBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) {
         systemRAMGB = Int(systemMemoryBytes / 1_073_741_824)
         mode = systemRAMGB >= 16 ? .normal : .fast
+        photoRestoreEnabled = false
+        photoRestorePreset = .balanced
+        photoRestoreStrength = 0.85
+        photoRestoreDetail = .natural
         deblurMode = .none
         faceRestoreEnabled = false
         codeFormerPreset = .balanced
@@ -130,6 +138,12 @@ final class UpscaleStore {
     var options: UpscaleOptions {
         UpscaleOptions(
             mode: mode,
+            photoRestoreOptions: .init(
+                isEnabled: photoRestoreEnabled,
+                preset: photoRestorePreset,
+                customStrength: photoRestoreStrength,
+                customDetail: photoRestoreDetail
+            ),
             deblurMode: deblurMode,
             codeFormerOptions: .init(
                 isEnabled: faceRestoreEnabled,
@@ -266,6 +280,14 @@ final class UpscaleStore {
         installedModelIDs.contains("face-restore")
     }
 
+    var isPhotoRestoreInstalled: Bool {
+        installedModelIDs.contains("photo-restore")
+    }
+
+    /// Original size skips the upscaler, so it is only useful with at least
+    /// one enhancement turned on.
+    var keepsOriginalSize: Bool { sizingKind == .original }
+
     var hasInstalledUpscaleModel: Bool {
         ModelInfo.upscaleChoices.contains { installedModelIDs.contains($0.id) }
     }
@@ -283,6 +305,9 @@ final class UpscaleStore {
         }
         if faceRestoreEnabled && !isFaceRestoreInstalled {
             faceRestoreEnabled = false
+        }
+        if photoRestoreEnabled && !isPhotoRestoreInstalled {
+            photoRestoreEnabled = false
         }
     }
 
@@ -413,13 +438,30 @@ final class UpscaleStore {
     /// handle results that already exist.
     func requestUpscale() {
         guard !items.isEmpty, !isRunning else { return }
-        guard mode.minimumRAMGB <= systemRAMGB else {
-            errorMessage = "\(mode.title) requires at least \(mode.minimumRAMGB) GB of RAM. This Mac has \(systemRAMGB) GB."
-            return
+        if keepsOriginalSize {
+            guard options.hasEnhancements else {
+                errorMessage = "Original size skips upscaling. Turn on Photo Restore, Deblur, or Restore Faces under Enhancements."
+                return
+            }
+        } else {
+            guard mode.minimumRAMGB <= systemRAMGB else {
+                errorMessage = "\(mode.title) requires at least \(mode.minimumRAMGB) GB of RAM. This Mac has \(systemRAMGB) GB."
+                return
+            }
+            guard installedModelIDs.contains(mode.rawValue) else {
+                showOnboarding = true
+                return
+            }
         }
-        guard installedModelIDs.contains(mode.rawValue) else {
-            showOnboarding = true
-            return
+        if photoRestoreEnabled {
+            guard systemRAMGB >= 8 else {
+                errorMessage = "Photo Restore requires at least 8 GB of RAM. This Mac has \(systemRAMGB) GB."
+                return
+            }
+            guard isPhotoRestoreInstalled else {
+                showOnboarding = true
+                return
+            }
         }
         if let deblurModelID = deblurMode.modelID {
             guard deblurMode.minimumRAMGB <= systemRAMGB else {
@@ -492,7 +534,7 @@ final class UpscaleStore {
         upscaleStartedAt = startedAt
         let activity = ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled],
-            reason: "Upscaling images"
+            reason: "Processing images"
         )
         defer { ProcessInfo.processInfo.endActivity(activity) }
 
