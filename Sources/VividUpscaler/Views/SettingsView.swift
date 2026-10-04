@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -7,24 +8,34 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Preferences") {
-                Text("Mode, size, and output format are saved automatically when you change them in the main window.")
-                    .font(.caption).foregroundStyle(.secondary)
+            Section("Processing Options") {
+                Text("Every launch starts from the recommended defaults, so a previous session's experimental settings never carry over to new photos.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             Section("Models") {
-                Text("Model files are stored at:")
-                    .font(.callout)
-                Text(modelDirectoryURL.path)
-                    .font(.system(.caption, design: .monospaced))
+                LabeledContent("Location") {
+                    Text(modelDirectoryURL.path)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([modelDirectoryURL])
+                }
+                .disabled(!FileManager.default.fileExists(atPath: modelDirectoryURL.path))
+                Text("Set VIVID_HOME before launching to store the runtime and models elsewhere.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
             }
-            Section("CLI") {
-                Text("Vivid Upscaler runs its bundled CLI. Choose Vivid Upscaler > Install Command Line Tool… to make the same CLI available as vvd in Terminal.")
+            Section("Command Line") {
+                Text("Choose Vivid Upscaler > Install Command Line Tool… to run the same bundled CLI as vvd in Terminal, including batch processing with --output-dir.")
                     .font(.callout)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 340)
+        .frame(width: 500, height: 380)
     }
 }

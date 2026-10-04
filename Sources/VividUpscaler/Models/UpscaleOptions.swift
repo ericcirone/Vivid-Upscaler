@@ -1,9 +1,11 @@
+import CoreGraphics
 import Foundation
 
 enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
     case fast
     case normal
     case normalHQ = "normal-hq"
+    case art
     case advanced
     case maximum
     case maximumExperimental = "maximum-experimental"
@@ -15,6 +17,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         case .fast: "Fast"
         case .normal: "Normal"
         case .normalHQ: "Normal HQ"
+        case .art: "Art & Anime"
         case .advanced: "Advanced"
         case .maximum: "Maximum"
         case .maximumExperimental: "Maximum Experimental"
@@ -26,6 +29,7 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
         case .fast: "Quickest general-purpose MLX upscaling"
         case .normal: "Main quality and speed balance"
         case .normalHQ: "Photographic restoration for compression, blur, and noise"
+        case .art: "Illustrations, anime, cartoons, and line art with clean edges"
         case .advanced: "8-bit SeedVR2 at 80% internal scale for faster high-quality restoration"
         case .maximum: "Highest-quality SeedVR2 processing; slowest and most memory intensive"
         case .maximumExperimental: "Experimental HYPIR generative restoration; may reconstruct plausible detail"
@@ -34,13 +38,16 @@ enum UpscaleMode: String, CaseIterable, Identifiable, Codable {
 
     var minimumRAMGB: Int {
         switch self {
-        case .fast: 8
+        case .fast, .art: 8
         case .normal, .normalHQ, .advanced: 16
         case .maximum, .maximumExperimental: 24
         }
     }
 
     var isExperimental: Bool { self == .maximumExperimental }
+
+    /// Fast mode blends Real-ESRGAN general-x4v3 with its denoising sibling.
+    var supportsNoiseReduction: Bool { self == .fast }
 }
 
 enum SizingKind: String, CaseIterable, Identifiable {
@@ -57,23 +64,37 @@ enum OutputFormat: String, CaseIterable, Identifiable {
     case jpg
     case jxl
     case webp
+    case avif
+    case tiff
+
+    static let writableExtensions: Set<String> = ["png", "jpg", "jpeg", "jxl", "webp", "avif", "tif", "tiff"]
+    static let qualityExtensions: Set<String> = ["jpg", "jpeg", "jxl", "webp", "avif"]
 
     var id: String { rawValue }
-    var title: String { self == .same ? "Same as input" : rawValue.uppercased() }
 
+    var title: String {
+        switch self {
+        case .same: "Same as input"
+        case .jxl: "JPEG XL"
+        default: rawValue.uppercased()
+        }
+    }
+
+    /// The extension written for `inputURL`. Formats Vivid reads but cannot
+    /// write fall back to the closest sensible output.
     func fileExtension(for inputURL: URL) -> String {
-        self == .same ? inputURL.pathExtension.lowercased() : rawValue
+        guard self == .same else { return rawValue }
+        let inputExtension = inputURL.pathExtension.lowercased()
+        if Self.writableExtensions.contains(inputExtension) { return inputExtension }
+        return ["heic", "heif"].contains(inputExtension) ? "jpg" : "png"
     }
 
     func supportsQuality(for inputURL: URL?) -> Bool {
-        let fileExtension: String
         if self == .same {
             guard let inputURL else { return false }
-            fileExtension = inputURL.pathExtension.lowercased()
-        } else {
-            fileExtension = rawValue
+            return Self.qualityExtensions.contains(fileExtension(for: inputURL))
         }
-        return ["jpg", "jpeg", "jxl", "webp"].contains(fileExtension)
+        return Self.qualityExtensions.contains(rawValue)
     }
 }
 
@@ -106,12 +127,15 @@ enum OutputQualityPreset: Int, CaseIterable, Identifiable {
 }
 
 struct UpscaleOptions {
+    static let defaultNoiseReduction = 0.5
+
     var mode: UpscaleMode
     var deblurMode: DeblurMode = .none
     var codeFormerOptions: CodeFormerOptions = .init()
     var generativeOptions: GenerativeOptions = .init()
     var seedVR2Options: SeedVR2Options = .init()
     var hypirOptions: HYPIROptions = .init()
+    var noiseReduction: Double = Self.defaultNoiseReduction
     var sizingKind: SizingKind
     var scale: Double
     var resolution: Int
@@ -133,11 +157,45 @@ struct UpscaleOptions {
         }
     }
 
-    func outputURL(for inputURL: URL) -> URL {
+    /// The CLI's `--denoise-strength` keeps more of the source noise as it
+    /// rises, so the app's noise-reduction amount is its complement.
+    var cliDenoiseStrength: Double {
+        1 - min(max(noiseReduction, 0), 1)
+    }
+
+    func outputURL(for inputURL: URL, in directory: URL? = nil) -> URL {
         let ext = format.fileExtension(for: inputURL)
         let deblurToken = deblurMode == .none ? "" : "-\(deblurMode.rawValue)"
         let faceRestoreToken = codeFormerOptions.isEnabled ? "-face-restore" : ""
         let filename = "\(inputURL.deletingPathExtension().lastPathComponent)-vivid-upscale-\(mode.rawValue)\(deblurToken)\(faceRestoreToken)-\(sizingToken).\(ext)"
-        return inputURL.deletingLastPathComponent().appendingPathComponent(filename)
+        return (directory ?? inputURL.deletingLastPathComponent()).appendingPathComponent(filename)
+    }
+
+    /// Mirrors the CLI's target-size calculation so the app can preview the
+    /// exact output dimensions before processing.
+    func outputPixelSize(for source: CGSize) -> CGSize? {
+        guard source.width >= 1, source.height >= 1 else { return nil }
+        let shortSide = min(source.width, source.height)
+        let longSide = max(source.width, source.height)
+        let shortEdge: Double
+        let maxLongEdge: Double
+        switch sizingKind {
+        case .scale:
+            guard scale > 0 else { return nil }
+            shortEdge = max(1, (shortSide * scale).rounded())
+            maxLongEdge = max(1, (longSide * scale).rounded())
+        case .resolution:
+            guard resolution > 0, maxResolution > 0 else { return nil }
+            shortEdge = Double(resolution)
+            maxLongEdge = Double(maxResolution)
+        }
+        var factor = shortEdge / shortSide
+        if longSide * factor > maxLongEdge {
+            factor = maxLongEdge / longSide
+        }
+        return CGSize(
+            width: max(1, (source.width * factor).rounded()),
+            height: max(1, (source.height * factor).rounded())
+        )
     }
 }

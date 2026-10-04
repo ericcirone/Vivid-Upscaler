@@ -5,6 +5,16 @@
 
 Vivid is an open-source, native macOS photo upscaler with an optional Terminal command, `vvd`. The app bundles the CLI, so both interfaces use the same models and processing pipeline.
 
+## Features
+
+- **Batch upscaling**: drop any mix of photos and folders (or open them from Finder or the Dock icon). Each photo shows its source and output dimensions, live status, and a per-photo Compare button; failures are reported per photo without stopping the batch.
+- **Seven upscale modes** from fast Real-ESRGAN to SeedVR2 and HYPIR diffusion restoration, including an **Art & Anime** mode for illustrations and line art.
+- **Enhancements**: Restormer motion/defocus deblur and CodeFormer face restoration before upscaling, plus adjustable noise reduction in Fast mode.
+- **Inputs**: PNG, JPEG, HEIC/HEIF, WebP, AVIF, JPEG XL, TIFF, BMP, GIF, 16-bit and CMYK images. EXIF-rotated photos are processed upright.
+- **Outputs**: same as input, PNG, JPG, JPEG XL, WebP, AVIF, or TIFF, saved beside the original or in a folder you choose. Transparency, EXIF, XMP, DPI, and ICC profiles are preserved. Results are written atomically, so a stopped job never leaves a truncated file.
+- **Before/after comparison** with a draggable divider and 1:1 pixel inspection.
+- Stop at any time (⌘.); the Mac stays awake during long batches, and the Dock icon shows the photos remaining.
+
 ## Requirements
 
 - An Apple Silicon Mac running macOS 14 Sonoma or newer
@@ -81,6 +91,12 @@ vvd portrait.jpg restored.png --mode normal --face-restore --codeformer-preset b
 vvd input.jpg output.jxl --mode advanced --scale 2 --quality 90 --seed 42
 vvd input.jpg output.png --mode maximum --tile on
 vvd input.jpg output.png --mode maximum --seedvr2-preset softer-detail --seed 123
+vvd IMG_0042.heic --format jpg --mode normal-hq      # HEIC in, JPG out
+vvd drawing.png --mode art --scale 4
+
+# Batch: any mix of files and folders
+vvd ~/Pictures/Trip --output-dir ~/Pictures/Trip-Upscaled --scale 2
+vvd *.jpg --output-dir upscaled --mode fast --skip-existing
 
 vvd models status
 vvd models status --json
@@ -94,7 +110,7 @@ Run `vvd --help` for the complete option list. The main options are:
 
 | Option | Description |
 | --- | --- |
-| `--mode MODE` | `fast`, `normal`, `normal-hq`, `advanced`, `maximum`, or `maximum-experimental`; default is `normal` |
+| `--mode MODE` | `fast`, `normal`, `normal-hq`, `art`, `advanced`, `maximum`, or `maximum-experimental`; default is `normal` |
 | `--deblur MODE` | Optional `deblur-motion` or `deblur-defocus` Restormer pass before upscaling; default is `none` |
 | `--face-restore` | Restore detected faces with CodeFormer after deblur and before upscaling; disabled by default |
 | `--codeformer-preset PRESET` | `enhance`, `balanced`, `faithful`, or `custom`; default is `balanced` |
@@ -103,8 +119,11 @@ Run `vvd --help` for the complete option list. The main options are:
 | `--resolution N` | Target the short edge in pixels; default is 2048 |
 | `--max-resolution N` | Cap the long edge in pixels; default is 4096 |
 | `--tile auto\|on\|off` | Control lower-memory processing; default is `auto` |
-| `--quality N` | JPG, JPEG XL, or WebP quality from 1 to 100; default is 90 |
-| `--denoise-strength N` | Fast-mode denoise balance from 0 to 1; default is 0.5 |
+| `--quality N` | JPG, JPEG XL, WebP, or AVIF quality from 1 to 100; default is 90 |
+| `--format FORMAT` | Output format when no output path is given: `png`, `jpg`, `webp`, `jxl`, `avif`, or `tiff` |
+| `--output-dir DIR` | Batch mode: write results to `DIR` instead of beside each input |
+| `--skip-existing` | Batch mode: skip inputs whose result already exists |
+| `--denoise-strength N` | Fast-mode noise retention from 0 (strongest denoise) to 1 (keep grain); default is 0.5 |
 | `--seed N` | Variation seed for `advanced`, `maximum`, and `maximum-experimental`; default is 42 |
 | `--seedvr2-preset PRESET` | `faithful`, `high-resolution-cleanup`, `softer-detail`, or `custom`; SeedVR2 modes only; default is `faithful` |
 | `--input-noise-scale N` | SeedVR2 input noise from 0 to 1; preset value unless explicitly overridden |
@@ -117,7 +136,9 @@ Run `vvd --help` for the complete option list. The main options are:
 | `--hypir-prompt TEXT` | Custom HYPIR photographic-result prompt |
 | `--no-progress` | Hide wrapper progress messages |
 
-A bare output filename is saved beside the input file. Include a slash, such as `./output.jpg`, to explicitly save relative to the current directory. When no output is supplied, Vivid writes an `_upscaled` file beside the input. The CLI currently processes one image at a time.
+A bare output filename is saved beside the input file. Include a slash, such as `./output.jpg`, to explicitly save relative to the current directory. When no output is supplied, Vivid writes an `_upscaled` file beside the input (HEIC inputs default to JPG, BMP and GIF to PNG).
+
+Batch mode starts when `--output-dir` is given, an input is a folder, or more than two paths are given. Folders are scanned non-recursively for supported images, each image is processed in turn, and the batch continues past individual failures; the exit status is non-zero if any image failed.
 
 ## Models and memory
 
@@ -126,6 +147,7 @@ A bare output filename is saved beside the input file. Include a slash, such as 
 | `fast` | `mlx-community/Real-ESRGAN-general-x4v3` | MLX | 8 GB | 16 GB | 24 GB | Quickest general-purpose upscaling |
 | `normal` | `mlx-community/Real-ESRGAN-x4plus` | MLX | 16 GB | 16 GB | 24 GB | Main quality and speed balance |
 | `normal-hq` | `4xNomosWebPhoto_esrgan` | PyTorch MPS via Spandrel | 16 GB | 16 GB | 24 GB | Photographic restoration for compression, blur, noise, and Web/JPEG sources |
+| `art` | `mlx-community/Real-ESRGAN-x4plus-anime-6B` | MLX | 8 GB | 16 GB | 24 GB | Illustrations, anime, cartoons, and line art |
 | `advanced` | SeedVR2 3B 8-bit, 80% internal scale | Native MLX | 16 GB | 24 GB | 32 GB | High-quality restoration with a meaningful speed improvement over Maximum |
 | `maximum` | SeedVR2 3B source precision | Native MLX | 24 GB | 32 GB | 48 GB | Highest-quality and slowest processing |
 | `maximum-experimental` | HYPIR-SD2 | PyTorch MPS, experimental | 24 GB | 32 GB | 48 GB | Maximum-tier opt-in generative restoration with strong detail reconstruction and adjustable texture richness |
@@ -151,9 +173,9 @@ Vivid keeps PyTorch's Metal memory guard enabled and reserves CPU headroom. Adva
 
 ## Formats, metadata, and output names
 
-The app supports the input format, PNG, JPG, JPEG XL, and WebP. Every pipeline uses the same final encoder, preserving EXIF, XMP, DPI, comments where supported, and the source ICC color profile. Orientation is normalized after source pixels are physically rotated. Vivid refuses color-managed JPEG XL output when `cjxl` is unavailable instead of silently replacing or dropping the profile.
+Vivid reads PNG, JPEG, HEIC/HEIF, WebP, AVIF, JPEG XL, TIFF, BMP, and GIF. HEIC, TIFF, 16-bit, CMYK, and EXIF-rotated sources are first decoded into an upright working copy, so every model sees the same correctly oriented pixels. Output can match the input or be PNG, JPG, JPEG XL, WebP, AVIF, or TIFF. Transparency is upscaled alongside the image for formats that support it; JPG output places transparent areas on white. Every pipeline uses the same final encoder, preserving EXIF, XMP, DPI, comments where supported, and the source ICC color profile. Orientation is normalized after source pixels are physically rotated. Vivid refuses color-managed JPEG XL output when `cjxl` is unavailable instead of silently replacing or dropping the profile.
 
-App output is written beside the input with a predictable name:
+App output is written beside the input, or to a folder chosen under **Output > Save to**, with a predictable name. If two photos in one batch would produce the same name, a numeric suffix is added:
 
 ```text
 portrait-vivid-upscale-normal-2x.jpg
@@ -170,6 +192,7 @@ portrait-vivid-upscale-advanced-2048px.webp
 ~/.local/share/vivid/models/HYPIR
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-general-x4v3
 ~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus
+~/.local/share/vivid/models/mlx/Real-ESRGAN-x4plus-anime-6B
 ~/.local/share/vivid/models/nomos-webphoto-esrgan
 ~/.local/share/vivid/models/restormer/motion
 ~/.local/share/vivid/models/restormer/defocus

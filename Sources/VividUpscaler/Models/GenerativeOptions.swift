@@ -10,7 +10,7 @@ extension UpscaleMode {
     var supportsVariationSeed: Bool {
         switch self {
         case .advanced, .maximum, .maximumExperimental: true
-        case .fast, .normal, .normalHQ: false
+        case .fast, .normal, .normalHQ, .art: false
         }
     }
 }

@@ -1,6 +1,9 @@
+import Darwin
 import Foundation
 
 actor VividCLI {
+    static let runtimeVersion = "28"
+
     struct Event: Sendable {
         let fraction: Double?
         let message: String
@@ -10,6 +13,7 @@ actor VividCLI {
         case notInstalled
         case bundledResourcesMissing
         case appTranslocated
+        case cancelled
         case failed(String)
 
         var errorDescription: String? {
@@ -20,6 +24,8 @@ actor VividCLI {
                 "This copy of Vivid Upscaler does not contain its bundled CLI resources."
             case .appTranslocated:
                 "Move Vivid Upscaler to Applications before installing its command line tool."
+            case .cancelled:
+                "Cancelled."
             case .failed(let message):
                 message.isEmpty ? "Vivid CLI failed." : message
             }
@@ -27,6 +33,7 @@ actor VividCLI {
     }
 
     private var process: Process?
+    private var cancellationRequested = false
 
     static func modelDirectoryURL(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -84,6 +91,7 @@ actor VividCLI {
         options: UpscaleOptions,
         onEvent: @escaping @Sendable (Event) -> Void
     ) async throws {
+        cancellationRequested = false
         try await ensureRuntime(onEvent: onEvent)
         let arguments = Self.upscaleArguments(input: input, output: output, options: options)
 
@@ -99,6 +107,9 @@ actor VividCLI {
             arguments += ["--face-restore"]
             arguments += ["--codeformer-preset", options.codeFormerOptions.preset.rawValue]
             arguments += ["--codeformer-fidelity", String(options.codeFormerOptions.resolvedFidelityWeight)]
+        }
+        if options.mode.supportsNoiseReduction {
+            arguments += ["--denoise-strength", String(format: "%.2f", options.cliDenoiseStrength)]
         }
         if options.mode.supportsVariationSeed {
             arguments += ["--seed", String(options.generativeOptions.variationSeed)]
@@ -133,7 +144,51 @@ actor VividCLI {
     }
 
     func cancel() {
-        process?.terminate()
+        guard let process else { return }
+        cancellationRequested = true
+        Self.terminateProcessTree(rootedAt: process.processIdentifier)
+    }
+
+    /// Stops whatever job is running when the app quits. Called synchronously
+    /// from the app delegate, so it reads the shared registry instead of the actor.
+    nonisolated static func terminateActiveProcessTree() {
+        if let pid = ActiveProcess.shared.pid {
+            terminateProcessTree(rootedAt: pid, waitForExit: false)
+        }
+    }
+
+    /// The CLI is a shell wrapper around Python workers, and those workers may
+    /// start their own children. Signalling only the wrapper would leave the
+    /// workers running on the GPU, so signal every descendant as well.
+    nonisolated static func terminateProcessTree(rootedAt root: pid_t, waitForExit: Bool = true) {
+        let tree = [root] + descendantProcessIdentifiers(of: root)
+        for pid in tree.reversed() {
+            kill(pid, SIGTERM)
+        }
+        guard waitForExit else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            for pid in tree where kill(pid, 0) == 0 {
+                kill(pid, SIGKILL)
+            }
+        }
+    }
+
+    nonisolated static func descendantProcessIdentifiers(of root: pid_t) -> [pid_t] {
+        var result: [pid_t] = []
+        var pending = [root]
+        while let parent = pending.popLast() {
+            let estimate = proc_listchildpids(parent, nil, 0)
+            guard estimate > 0 else { continue }
+            var children = [pid_t](repeating: 0, count: Int(estimate) + 16)
+            let count = children.withUnsafeMutableBytes { buffer in
+                proc_listchildpids(parent, buffer.baseAddress, Int32(buffer.count))
+            }
+            guard count > 0 else { continue }
+            let found = children.prefix(Int(count)).filter { $0 > 0 }
+            result += found
+            pending += found
+        }
+        return result
     }
 
     func installCommandLineTool() throws -> URL {
@@ -188,7 +243,7 @@ actor VividCLI {
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_seedvr2.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_codeformer.py").path)
             && FileManager.default.fileExists(atPath: root.appendingPathComponent("vivid_hypir_blend.py").path)
-            && version == "27"
+            && version == Self.runtimeVersion
     }
 
     private func ensureRuntime(onEvent: @escaping @Sendable (Event) -> Void) async throws {
@@ -252,6 +307,9 @@ actor VividCLI {
         task.environment = ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, override in override }
         task.standardOutput = pipe
         task.standardError = pipe
+        // Vivid's output is parsed as UTF-8; Python otherwise inherits the
+        // app's often-unset locale and may fail on non-ASCII file names.
+        task.environment?["PYTHONIOENCODING"] = "utf-8"
         process = task
 
         final class LineBuffer: @unchecked Sendable {
@@ -289,6 +347,10 @@ actor VividCLI {
             let data = handle.availableData
             if !data.isEmpty { buffer.append(data, emit: onLine) }
         }
+        // Install the handler before launching: a command that exits quickly
+        // could otherwise finish before the handler exists and never resume.
+        let termination = TerminationSignal()
+        task.terminationHandler = { _ in termination.signal() }
 
         do {
             try task.run()
@@ -297,15 +359,19 @@ actor VividCLI {
             process = nil
             throw error
         }
+        ActiveProcess.shared.pid = task.processIdentifier
 
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            task.terminationHandler = { _ in continuation.resume() }
-        }
+        await termination.wait()
         pipe.fileHandleForReading.readabilityHandler = nil
         buffer.append(pipe.fileHandleForReading.readDataToEndOfFile(), emit: onLine)
         buffer.flush(emit: onLine)
         process = nil
+        ActiveProcess.shared.pid = nil
 
+        if cancellationRequested {
+            cancellationRequested = false
+            throw CLIError.cancelled
+        }
         guard task.terminationStatus == 0 else {
             throw CLIError.failed(buffer.lines.suffix(8).joined(separator: "\n"))
         }
@@ -342,5 +408,45 @@ actor VividCLI {
         if line.contains("Saving output") { return Event(fraction: 0.95, message: "Saving") }
         if line.contains("[3/3] Complete") { return Event(fraction: 1, message: "Complete") }
         return Event(fraction: nil, message: line.trimmingCharacters(in: .whitespaces))
+    }
+}
+
+/// Process identifier of the running CLI job, readable without the actor.
+private final class ActiveProcess: @unchecked Sendable {
+    static let shared = ActiveProcess()
+    private let lock = NSLock()
+    private var value: pid_t?
+
+    var pid: pid_t? {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
+private final class TerminationSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSignaled = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        lock.lock()
+        isSignaled = true
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume()
+    }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if isSignaled {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
     }
 }

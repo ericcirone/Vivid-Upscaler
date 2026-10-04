@@ -6,7 +6,7 @@ import Testing
 struct ModelCatalogTests {
     @Test("Catalog exposes every processing mode")
     func exposesEveryMode() {
-        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "advanced", "maximum", "maximum-experimental", "deblur-motion", "deblur-defocus", "face-restore"])
+        #expect(ModelInfo.choices.map(\.id) == ["fast", "normal", "normal-hq", "art", "advanced", "maximum", "maximum-experimental", "deblur-motion", "deblur-defocus", "face-restore"])
         #expect(Set(ModelInfo.choices.compactMap(\.mode)) == Set(UpscaleMode.allCases))
         #expect(Set(ModelInfo.choices.compactMap(\.deblurMode)) == Set([DeblurMode.motion, DeblurMode.defocus]))
     }
@@ -17,6 +17,7 @@ struct ModelCatalogTests {
         #expect(requirements["fast"] == 8)
         #expect(requirements["normal"] == 16)
         #expect(requirements["normal-hq"] == 16)
+        #expect(requirements["art"] == 8)
         #expect(requirements["advanced"] == 16)
         #expect(requirements["maximum"] == 24)
         #expect(requirements["maximum-experimental"] == 24)
@@ -34,6 +35,8 @@ struct ModelCatalogTests {
         #expect(catalog["normal"]?.1 == "MLX")
         #expect(catalog["normal-hq"]?.0 == "4xNomosWebPhoto_esrgan")
         #expect(catalog["normal-hq"]?.1 == "PyTorch MPS via Spandrel")
+        #expect(catalog["art"]?.0 == "mlx-community/Real-ESRGAN-x4plus-anime-6B")
+        #expect(catalog["art"]?.1 == "MLX")
         #expect(catalog["advanced"]?.0 == "SeedVR2 3B 8-bit, 80% internal scale")
         #expect(catalog["advanced"]?.1 == "Native MLX")
         #expect(catalog["maximum"]?.0 == "SeedVR2 3B source precision")
@@ -176,6 +179,28 @@ struct ModelCatalogTests {
         #expect(containsPair("--hypir-prompt", "natural portrait photograph"))
     }
 
+    @Test("Fast mode forwards noise reduction as the CLI's inverse denoise strength")
+    func cliNoiseReductionArgument() {
+        let input = URL(fileURLWithPath: "/tmp/input.png")
+        let output = URL(fileURLWithPath: "/tmp/output.png")
+        var options = UpscaleOptions(mode: .fast, noiseReduction: 0.75, sizingKind: .scale, scale: 2, resolution: 2048, maxResolution: 4096, format: .png, quality: 90)
+        var arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        #expect(zip(arguments, arguments.dropFirst()).contains { $0 == "--denoise-strength" && $1 == "0.25" })
+
+        options.mode = .art
+        arguments = VividCLI.upscaleArguments(input: input, output: output, options: options)
+        #expect(!arguments.contains("--denoise-strength"))
+        #expect(!arguments.contains("--seed"))
+        #expect(zip(arguments, arguments.dropFirst()).contains { $0 == "--mode" && $1 == "art" })
+    }
+
+    @Test("Download estimates count shared SeedVR2 weights once")
+    func downloadEstimates() {
+        #expect(ModelInfo.downloadMB(for: ["advanced", "maximum"]) == ModelInfo.info(for: "advanced")!.downloadMB)
+        #expect(ModelInfo.downloadMB(for: ["fast", "art"]) == 14)
+        #expect(Set(ModelInfo.upscaleChoices + ModelInfo.enhancementChoices) == Set(ModelInfo.choices))
+    }
+
     @Test("Models below the machine RAM threshold are rejected")
     func compatibility() {
         let maximum = ModelInfo.info(for: "maximum")!
@@ -239,6 +264,8 @@ struct ModelCatalogTests {
         firstStore.hypirPatchSize = 1_024
         firstStore.hypirPatchStride = 768
         firstStore.hypirPrompt = "custom prompt"
+        firstStore.noiseReduction = 0.9
+        firstStore.outputDirectory = URL(fileURLWithPath: "/tmp", isDirectory: true)
         firstStore.sizingKind = .resolution
         firstStore.scale = 4
         firstStore.resolution = 1_024
@@ -256,6 +283,8 @@ struct ModelCatalogTests {
         #expect(restartedStore.hypirPatchSize == 768)
         #expect(restartedStore.hypirPatchStride == 512)
         #expect(restartedStore.hypirPrompt == HYPIRSettings.balancedPrompt)
+        #expect(restartedStore.noiseReduction == UpscaleOptions.defaultNoiseReduction)
+        #expect(restartedStore.outputDirectory == nil)
         #expect(restartedStore.sizingKind == .scale)
         #expect(restartedStore.scale == 2)
         #expect(restartedStore.resolution == 2_048)

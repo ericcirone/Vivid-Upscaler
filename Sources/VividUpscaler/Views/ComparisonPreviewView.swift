@@ -2,21 +2,26 @@ import AppKit
 import SwiftUI
 
 struct ComparisonPreviewView: View {
-    private let originalImage: NSImage?
-    private let upscaledImage: NSImage?
-    private let originalName: String
-    private let upscaledName: String
+    private struct LoadedImages {
+        let original: NSImage
+        let upscaled: NSImage
+    }
+
+    private let originalURL: URL
+    private let upscaledURL: URL
+    private var originalName: String { originalURL.lastPathComponent }
+    private var upscaledName: String { upscaledURL.lastPathComponent }
 
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.displayScale) private var displayScale
     @State private var dividerPosition = 0.5
     @State private var isActualSize = false
+    @State private var images: LoadedImages?
+    @State private var didFailToLoad = false
 
     init(originalURL: URL, upscaledURL: URL) {
-        originalImage = NSImage(contentsOf: originalURL)
-        upscaledImage = NSImage(contentsOf: upscaledURL)
-        originalName = originalURL.lastPathComponent
-        upscaledName = upscaledURL.lastPathComponent
+        self.originalURL = originalURL
+        self.upscaledURL = upscaledURL
     }
 
     var body: some View {
@@ -24,14 +29,29 @@ struct ComparisonPreviewView: View {
             header
             Divider()
 
-            if let originalImage, let upscaledImage {
-                comparisonViewer(originalImage: originalImage, upscaledImage: upscaledImage)
-            } else {
+            if let images {
+                comparisonViewer(originalImage: images.original, upscaledImage: images.upscaled)
+            } else if didFailToLoad {
                 ContentUnavailableView(
                     "Preview Unavailable",
                     systemImage: "photo.badge.exclamationmark",
                     description: Text("The original or upscaled image could not be opened.")
                 )
+            } else {
+                ProgressView("Loading images…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task(id: [originalURL, upscaledURL]) {
+            images = nil
+            didFailToLoad = false
+            // Decode once, here, rather than in init: the window's content is
+            // rebuilt on every store change while a batch is running.
+            if let original = NSImage(contentsOf: originalURL),
+               let upscaled = NSImage(contentsOf: upscaledURL) {
+                images = LoadedImages(original: original, upscaled: upscaled)
+            } else {
+                didFailToLoad = true
             }
         }
         .frame(
@@ -47,9 +67,11 @@ struct ComparisonPreviewView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Compare Images")
+                Text(originalName)
                     .font(.headline)
-                Text("Drag the divider or slider to reveal the upscaled image.")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("Drag the divider or slider to compare. Use 1:1 to inspect pixels.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

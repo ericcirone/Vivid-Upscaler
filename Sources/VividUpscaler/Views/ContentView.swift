@@ -9,24 +9,46 @@ struct ContentView: View {
 
     var body: some View {
         HSplitView {
-            VStack(spacing: 20) {
-                header
-                DropZoneView(inputURL: store.inputURL, isTargeted: isDropTargeted) {
-                    store.chooseInput()
+            VStack(spacing: 0) {
+                photoArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if !store.items.isEmpty {
+                    Divider()
+                    StatusBarView(store: store) { isShowingLog = true }
                 }
-                .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
-                    handleDrop(providers)
-                }
-
-                outputSummary
-                progressArea
-                Spacer(minLength: 0)
             }
-            .padding(28)
-            .frame(minWidth: 470)
+            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                if isDropTargeted && !store.items.isEmpty {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.accentColor, lineWidth: 3)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                        .padding(6)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [UTType.fileURL], isTargeted: $isDropTargeted, perform: handleDrop)
 
             OptionsView(store: store)
-                .frame(width: 285)
+                .frame(minWidth: 300, idealWidth: 320, maxWidth: 400)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button {
+                    store.chooseInputs()
+                } label: {
+                    Label("Add Photos", systemImage: "plus")
+                }
+                .help("Add photos or folders (⌘O)")
+
+                Button {
+                    store.showOnboarding = true
+                } label: {
+                    Label("Models", systemImage: "shippingbox")
+                }
+                .help(store.isRunning ? "Models can be managed after processing finishes" : "Download or remove models")
+                .disabled(store.isRunning)
+            }
         }
         .task { await store.refreshSetupState() }
         .sheet(isPresented: $store.showOnboarding) {
@@ -41,6 +63,12 @@ struct ContentView: View {
             set: { if !$0 { store.errorMessage = nil } }
         )) {
             Button("OK") { store.errorMessage = nil }
+            if !store.logLines.isEmpty {
+                Button("Show Log") {
+                    store.errorMessage = nil
+                    isShowingLog = true
+                }
+            }
         } message: {
             Text(store.errorMessage ?? "")
         }
@@ -52,99 +80,95 @@ struct ContentView: View {
         } message: {
             Text(store.noticeMessage ?? "")
         }
-        .alert("Replace existing output?", isPresented: Binding(
-            get: { store.pendingOverwriteURL != nil },
-            set: { if !$0 { store.pendingOverwriteURL = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { store.pendingOverwriteURL = nil }
-            Button("Replace", role: .destructive) {
-                store.pendingOverwriteURL = nil
-                Task { await store.upscale(overwrite: true) }
+        .alert(
+            overwriteTitle,
+            isPresented: Binding(
+                get: { store.pendingOverwrite != nil },
+                set: { if !$0 { store.pendingOverwrite = nil } }
+            ),
+            presenting: store.pendingOverwrite
+        ) { confirmation in
+            Button("Replace", role: .destructive) { store.startUpscale(policy: .replace) }
+            if confirmation.totalCount > confirmation.existingOutputs.count {
+                Button("Skip Existing") { store.startUpscale(policy: .skip) }
             }
-        } message: {
-            Text(store.pendingOverwriteURL?.lastPathComponent ?? "This file already exists.")
-        }
-    }
-
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Vivid Upscaler").font(.largeTitle.bold())
-                Text("Native controls, powered by the Vivid CLI").foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("Models") { store.showOnboarding = true }
+            Button("Cancel", role: .cancel) { store.pendingOverwrite = nil }
+        } message: { confirmation in
+            Text(overwriteMessage(confirmation))
         }
     }
 
     @ViewBuilder
-    private var outputSummary: some View {
-        if let output = store.outputURL {
-            HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "arrow.turn.down.right")
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Output").font(.caption).foregroundStyle(.secondary)
-                    Text(output.lastPathComponent).font(.callout.monospaced()).textSelection(.enabled)
-                    Text(output.deletingLastPathComponent().path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-            }
+    private var photoArea: some View {
+        if store.items.isEmpty {
+            DropZoneView(isTargeted: isDropTargeted) { store.chooseInputs() }
+                .padding(24)
+        } else if store.items.count == 1, let item = store.items.first {
+            SinglePhotoView(store: store, item: item, compare: compare)
+        } else {
+            QueueListView(store: store, compare: compare)
         }
     }
 
-    private var progressArea: some View {
-        VStack(spacing: 10) {
-            if store.isRunning {
-                HStack(spacing: 10) {
-                    if let progress = store.progress {
-                        ProgressView(value: progress)
-                    } else {
-                        ProgressView()
-                    }
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let elapsed = store.formattedRunningElapsedTime(at: context.date)
-                        Text(elapsed)
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 62, alignment: .trailing)
-                            .accessibilityLabel("Elapsed time \(elapsed)")
-                    }
-                }
-                HStack {
-                    Text(store.status).font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
-                    Button("Cancel", role: .destructive) { store.cancel() }
-                }
-                HStack {
-                    Button("View Full Log") { isShowingLog = true }
-                    Spacer()
-                }
-            } else if store.completedOutputURL != nil {
-                HStack {
-                    Label(completionLabel, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                    Spacer()
-                    Button("Preview") { openWindow(id: "comparison-preview") }
-                    Button("Show in Finder") { store.revealOutput() }
-                }
-            }
-        }
+    private var overwriteTitle: String {
+        guard let confirmation = store.pendingOverwrite else { return "Replace existing results?" }
+        return confirmation.existingOutputs.count == 1
+            ? "Replace existing result?"
+            : "Replace \(confirmation.existingOutputs.count) existing results?"
     }
 
-    private var completionLabel: String {
-        guard let elapsed = store.formattedElapsedTime else { return "Upscale complete" }
-        return "Upscale complete in \(elapsed)"
+    private func overwriteMessage(_ confirmation: UpscaleStore.OverwriteConfirmation) -> String {
+        if confirmation.existingOutputs.count == 1, let existing = confirmation.existingOutputs.first {
+            return "\(existing.lastPathComponent) already exists in \(existing.deletingLastPathComponent().lastPathComponent)."
+        }
+        let names = confirmation.existingOutputs.prefix(3).map(\.lastPathComponent).joined(separator: ", ")
+        let more = confirmation.existingOutputs.count > 3 ? ", and \(confirmation.existingOutputs.count - 3) more" : ""
+        return "These results already exist: \(names)\(more)."
+    }
+
+    private func compare(_ item: BatchItem) {
+        if store.prepareComparison(for: item) {
+            openWindow(id: "comparison-preview")
+        }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-            let url: URL?
-            if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
-            else { url = item as? URL }
-            if let url { Task { @MainActor in store.selectInput(url) } }
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !fileProviders.isEmpty else { return false }
+        let collector = DroppedURLCollector(expected: fileProviders.count) { urls in
+            Task { @MainActor in store.addInputs(urls) }
+        }
+        for provider in fileProviders {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                collector.add(url)
+            }
         }
         return true
+    }
+}
+
+/// Gathers URLs from several asynchronous item providers, preserving drop order.
+private final class DroppedURLCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining: Int
+    private var urls: [URL] = []
+    private let completion: @Sendable ([URL]) -> Void
+
+    init(expected: Int, completion: @escaping @Sendable ([URL]) -> Void) {
+        remaining = expected
+        self.completion = completion
+    }
+
+    func add(_ url: URL?) {
+        lock.lock()
+        if let url { urls.append(url) }
+        remaining -= 1
+        let finished = remaining == 0
+        let collected = urls
+        lock.unlock()
+        if finished {
+            completion(collected.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending })
+        }
     }
 }
 
@@ -157,6 +181,11 @@ private struct ProcessingLogView: View {
             HStack {
                 Text("Processing Log").font(.headline)
                 Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(store.fullLog, forType: .string)
+                }
+                .disabled(store.logLines.isEmpty)
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }

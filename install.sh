@@ -5,7 +5,7 @@ INSTALL_ROOT="${VIVID_HOME:-$HOME/.local/share/vivid}"
 BIN_DIR="${VIVID_BIN_DIR:-$HOME/.local/bin}"
 VENV_DIR="$INSTALL_ROOT/venv"
 MODEL_ROOT="$INSTALL_ROOT/models"
-RUNTIME_VERSION="27"
+RUNTIME_VERSION="28"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "Installing uv..."
@@ -39,7 +39,7 @@ uv pip install --python "$VENV_DIR/bin/python" torch torchvision
 uv pip install --python "$VENV_DIR/bin/python" \
   "mflux==0.18.0" \
   "realesrgan-mlx @ git+https://github.com/xocialize/realesrgan-mlx.git@52c0fc1044277900b995308095a1f3cc484a3581" \
-  pillow pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" "spandrel-extra-arches==0.2.0" safetensors huggingface-hub \
+  pillow pillow-heif pillow-jxl-plugin "pyjpegxl==0.2.2" numpy "spandrel==0.4.2" "spandrel-extra-arches==0.2.0" safetensors huggingface-hub \
   accelerate diffusers peft omegaconf einops opencv-python-headless timm open-clip-torch \
   addict future lmdb pyyaml requests scikit-image scipy tqdm yapf lpips gdown \
   "openai==1.96.1" "tenacity==9.1.2"
@@ -49,24 +49,29 @@ cat > "$INSTALL_ROOT/vivid_upscale.py" <<'PY'
 from __future__ import annotations
 
 import argparse
-import json
+import io
 import math
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
-import urllib.request
 from pathlib import Path
 
 import numpy as np
 import pyjpegxl
-from PIL import Image, ImageOps, PngImagePlugin
+from PIL import Image, ImageCms, ImageOps, PngImagePlugin
 
 try:
     import pillow_jxl  # Registers JPEG XL support with Pillow.
 except ImportError:
     pillow_jxl = None
+
+try:
+    from pillow_heif import register_heif_opener  # Registers HEIC/HEIF support with Pillow.
+
+    register_heif_opener()
+except ImportError:
+    pass
 
 MODELS = {
     "fast": {
@@ -84,13 +89,14 @@ MODELS = {
     "normal-hq": {
         "display_name": "4xNomosWebPhoto_esrgan",
         "kind": "spandrel",
-        "files": {
-            "main": {
-                "filename": "4xNomosWebPhoto_esrgan.safetensors",
-                "url": "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.safetensors",
-            }
-        },
+        "filename": "4xNomosWebPhoto_esrgan.safetensors",
         "download_dir": "nomos-webphoto-esrgan",
+    },
+    "art": {
+        "display_name": "mlx-community/Real-ESRGAN-x4plus-anime-6B",
+        "kind": "mlx",
+        "variant": "RealESRGAN_x4plus_anime_6B",
+        "download_dir": "mlx/Real-ESRGAN-x4plus-anime-6B",
     },
 }
 
@@ -107,30 +113,12 @@ DEBLUR_MODELS = {
     },
 }
 
+# Formats every model path can read directly. Anything else, and any image
+# with a non-default EXIF orientation, is normalized to an upright PNG first.
+DIRECT_INPUT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALPHA_OUTPUT_EXTENSIONS = {".png", ".webp", ".jxl", ".avif", ".tif", ".tiff"}
+
 EXTRA_ARCHES_INSTALLED = False
-
-
-class ProgressBar:
-    def __init__(self, label: str):
-        self.label = label
-        self.last_percent = -5
-
-    def __call__(self, block_num: int, block_size: int, total_size: int) -> None:
-        if total_size <= 0:
-            return
-        downloaded = block_num * block_size
-        percent = min(100, int(downloaded * 100 / total_size))
-        if percent == 100 or percent >= self.last_percent + 5:
-            self.last_percent = percent
-            print(f"      {self.label}: {percent}%", flush=True)
-
-
-def download_if_missing(url: str, destination: Path) -> None:
-    if destination.exists():
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    print(f"      Downloading {destination.name}", flush=True)
-    urllib.request.urlretrieve(url, destination, ProgressBar(destination.name))
 
 
 def choose_device() -> torch.device:
@@ -139,54 +127,6 @@ def choose_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
-
-
-def load_checkpoint(path: Path) -> dict:
-    try:
-        return torch.load(path, map_location="cpu", weights_only=True)
-    except TypeError:
-        return torch.load(path, map_location="cpu")
-
-
-def checkpoint_state(checkpoint: dict) -> tuple[str | None, dict[str, torch.Tensor]]:
-    if "params_ema" in checkpoint:
-        return "params_ema", checkpoint["params_ema"]
-    if "params" in checkpoint:
-        return "params", checkpoint["params"]
-    return None, checkpoint
-
-
-def blended_model_path(main: Path, wdn: Path, strength: float, model_dir: Path) -> Path:
-    if strength >= 0.9999:
-        return main
-    if strength <= 0.0001:
-        return wdn
-
-    destination = model_dir / f"realesr-general-x4v3-dn-{strength:.3f}.pth"
-    if destination.exists():
-        return destination
-
-    print(f"      Preparing denoise blend {strength:.3f}...", flush=True)
-    main_checkpoint = load_checkpoint(main)
-    wdn_checkpoint = load_checkpoint(wdn)
-    main_key, main_state = checkpoint_state(main_checkpoint)
-    _, wdn_state = checkpoint_state(wdn_checkpoint)
-
-    blended: dict[str, torch.Tensor] = {}
-    for key, main_value in main_state.items():
-        wdn_value = wdn_state[key]
-        if torch.is_tensor(main_value) and torch.is_floating_point(main_value):
-            blended[key] = main_value.mul(strength).add(wdn_value, alpha=1.0 - strength)
-        else:
-            blended[key] = main_value
-
-    payload: dict | dict[str, torch.Tensor]
-    if main_key is None:
-        payload = blended
-    else:
-        payload = {main_key: blended}
-    torch.save(payload, destination)
-    return destination
 
 
 def compute_target_size(width: int, height: int, short_edge: int, max_long_edge: int) -> tuple[int, int]:
@@ -236,6 +176,93 @@ def choose_tile_size(
         if system_ram_gb >= 24:
             return 512
         return 384
+    return 0
+
+
+def has_alpha(image: Image.Image) -> bool:
+    return image.mode in {"RGBA", "LA", "PA"} or (image.mode == "P" and "transparency" in image.info)
+
+
+def to_display_rgb(image: Image.Image) -> Image.Image:
+    """Convert any Pillow mode to 8-bit RGB without clipping high-bit-depth data."""
+    if image.mode in {"I;16", "I;16L", "I;16B", "I;16N", "I"}:
+        array = np.asarray(image, dtype=np.float64)
+        maximum = 65535.0 if image.mode.startswith("I;16") or array.max(initial=0) > 255 else 255.0
+        array = np.clip(array / maximum * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        return Image.fromarray(array, mode="L").convert("RGB")
+    if image.mode == "F":
+        array = np.clip(np.asarray(image, dtype=np.float64) * 255.0 + 0.5, 0, 255).astype(np.uint8)
+        return Image.fromarray(array, mode="L").convert("RGB")
+    return image.convert("RGB")
+
+
+def cmyk_to_rgb(image: Image.Image, icc_profile: bytes | None) -> Image.Image:
+    if icc_profile:
+        try:
+            return ImageCms.profileToProfile(
+                image,
+                ImageCms.ImageCmsProfile(io.BytesIO(icc_profile)),
+                ImageCms.createProfile("sRGB"),
+                outputMode="RGB",
+            )
+        except (ImageCms.PyCMSError, OSError, ValueError):
+            pass
+    return image.convert("RGB")
+
+
+def source_alpha(image: Image.Image) -> Image.Image | None:
+    if not has_alpha(image):
+        return None
+    alpha = image.convert("RGBA").getchannel("A")
+    # Fully opaque alpha carries no information; skip it so outputs stay RGB.
+    return None if alpha.getextrema() == (255, 255) else alpha
+
+
+def apply_alpha(result: Image.Image, alpha: Image.Image | None, destination: Path) -> Image.Image:
+    if alpha is None:
+        return result
+    if alpha.size != result.size:
+        alpha = alpha.resize(result.size, Image.Resampling.LANCZOS)
+    if destination.suffix.lower() in ALPHA_OUTPUT_EXTENSIONS:
+        rgba = result.convert("RGBA")
+        rgba.putalpha(alpha)
+        return rgba
+    # Formats without transparency get the conventional white matte instead of
+    # whatever color data happened to sit beneath transparent pixels.
+    matte = Image.new("RGB", result.size, (255, 255, 255))
+    matte.paste(result, mask=alpha)
+    return matte
+
+
+def prepare_input(input_path: Path, output_path: Path) -> int:
+    """Write an upright PNG when the source needs normalization.
+
+    Prints "WIDTH HEIGHT NORMALIZED" for the shell wrapper.
+    """
+    with Image.open(input_path) as opened:
+        orientation = opened.getexif().get(274, 1)
+        needs_normalization = (
+            input_path.suffix.lower() not in DIRECT_INPUT_EXTENSIONS
+            or orientation not in (None, 1)
+            or opened.mode not in {"RGB", "RGBA", "L", "P", "LA"}
+            or getattr(opened, "n_frames", 1) > 1
+        )
+        oriented = ImageOps.exif_transpose(opened)
+        width, height = oriented.size
+        if needs_normalization:
+            icc_profile = opened.info.get("icc_profile")
+            alpha = source_alpha(oriented)
+            if oriented.mode == "CMYK":
+                normalized = cmyk_to_rgb(oriented, icc_profile)
+                icc_profile = None
+            else:
+                normalized = to_display_rgb(oriented)
+            if alpha is not None:
+                normalized = normalized.convert("RGBA")
+                normalized.putalpha(alpha)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            normalized.save(output_path, format="PNG", icc_profile=icc_profile)
+    print(width, height, 1 if needs_normalization else 0)
     return 0
 
 
@@ -437,17 +464,15 @@ def save_color_managed_jxl(
             raise RuntimeError(message or "cjxl failed to encode the output image")
 
 
-def save_image(
+def write_image(
     image: Image.Image,
     destination: Path,
     quality: int,
     exif: Image.Exif | None,
     icc_profile: bytes | None,
     xmp: bytes | None,
-    source_info: dict[str, object] | None = None,
+    source_info: dict[str, object],
 ) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    source_info = source_info or {}
     if isinstance(xmp, str):
         xmp = xmp.encode("utf-8")
     save_kwargs: dict[str, object] = {}
@@ -486,8 +511,10 @@ def save_image(
     if ext in {".jpg", ".jpeg"}:
         save_kwargs["quality"] = quality
         save_kwargs["subsampling"] = 0
-    elif ext == ".webp":
+    elif ext in {".webp", ".avif"}:
         save_kwargs["quality"] = quality
+    elif ext in {".tif", ".tiff"}:
+        save_kwargs["compression"] = "tiff_lzw"
     elif ext == ".png":
         pnginfo = PngImagePlugin.PngInfo()
         for key, value in source_info.items():
@@ -498,6 +525,8 @@ def save_image(
         if xmp:
             pnginfo.add_itxt("XML:com.adobe.xmp", xmp.decode("utf-8", errors="replace"))
         save_kwargs["pnginfo"] = pnginfo
+    else:
+        raise RuntimeError(f"Unsupported output format: {ext or 'no extension'}")
     if exif_bytes:
         save_kwargs["exif"] = exif_bytes
     if icc_profile:
@@ -511,57 +540,89 @@ def save_image(
     image.save(destination, **save_kwargs)
 
 
+def save_image(
+    image: Image.Image,
+    destination: Path,
+    quality: int,
+    exif: Image.Exif | None,
+    icc_profile: bytes | None,
+    xmp: bytes | None,
+    source_info: dict[str, object] | None = None,
+) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Encode beside the destination and rename into place so an interrupted
+    # or failed job never leaves a truncated image under the final name.
+    partial = destination.with_name(f".{destination.stem}.vivid-partial{destination.suffix}")
+    try:
+        write_image(image, partial, quality, exif, icc_profile, xmp, source_info or {})
+        os.replace(partial, destination)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def read_metadata(path: Path) -> tuple[Image.Exif, bytes | None, bytes | str | None, dict[str, object], Image.Image]:
+    with Image.open(path) as opened:
+        exif = opened.getexif()
+        # CMYK sources are converted to sRGB pixels, so their CMYK profile
+        # no longer describes the output and must not be embedded.
+        icc_profile = None if opened.mode == "CMYK" else opened.info.get("icc_profile")
+        xmp = opened.info.get("xmp") or opened.info.get("XML:com.adobe.xmp")
+        source_info = dict(opened.info)
+        oriented = ImageOps.exif_transpose(opened)
+        oriented.load()
+    return exif, icc_profile, xmp, source_info, oriented
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Photo upscaling for Vivid")
     parser.add_argument("input")
     parser.add_argument("output")
-    parser.add_argument("--model-root", required=True)
-    parser.add_argument("--mode", choices=["fast", "normal", "normal-hq"], required=True)
+    parser.add_argument("--model-root")
+    parser.add_argument("--mode", choices=sorted(MODELS), default="fast")
     parser.add_argument("--deblur", choices=["none", "deblur-motion", "deblur-defocus"], default="none")
-    parser.add_argument("--short-edge", type=int, required=True)
-    parser.add_argument("--max-long-edge", type=int, required=True)
+    parser.add_argument("--short-edge", type=int)
+    parser.add_argument("--max-long-edge", type=int)
     parser.add_argument("--tile", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--system-ram-gb", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--denoise-strength", type=float, default=0.5)
     parser.add_argument("--quality", type=int, choices=range(1, 101), default=90, metavar="1-100")
+    parser.add_argument("--prepare-input", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--finalize-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--deblur-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--metadata-source", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
-    if not 0 <= args.denoise_strength <= 1:
-        parser.error("--denoise-strength must be between 0 and 1")
-
     input_path = Path(args.input)
     output_path = Path(args.output)
+    if args.prepare_input:
+        return prepare_input(input_path, output_path)
+
+    if not 0 <= args.denoise_strength <= 1:
+        parser.error("--denoise-strength must be between 0 and 1")
+    if args.model_root is None and not args.finalize_only:
+        parser.error("--model-root is required")
+    if not args.deblur_only and (args.short_edge is None or args.max_long_edge is None):
+        parser.error("--short-edge and --max-long-edge are required")
+
+    metadata_path = Path(args.metadata_source) if args.metadata_source else input_path
+    exif, icc_profile, xmp, source_info, oriented_source = read_metadata(metadata_path)
+    alpha = source_alpha(oriented_source)
+
     if args.finalize_only:
         if not args.metadata_source:
             parser.error("--finalize-only requires --metadata-source")
-        metadata_path = Path(args.metadata_source)
-        with Image.open(metadata_path) as opened:
-            exif = opened.getexif()
-            icc_profile = opened.info.get("icc_profile")
-            xmp = opened.info.get("xmp") or opened.info.get("XML:com.adobe.xmp")
-            source_info = dict(opened.info)
-            oriented_source = ImageOps.exif_transpose(opened)
-            target_size = compute_target_size(*oriented_source.size, args.short_edge, args.max_long_edge)
+        target_size = compute_target_size(*oriented_source.size, args.short_edge, args.max_long_edge)
         with Image.open(input_path) as processed:
             result = processed.convert("RGB")
             if result.size != target_size:
                 result = result.resize(target_size, Image.Resampling.LANCZOS)
+        result = apply_alpha(result, alpha, output_path)
         save_image(result, output_path, args.quality, exif, icc_profile, xmp, source_info)
         input_path.unlink(missing_ok=True)
         return 0
 
-    metadata_path = Path(args.metadata_source) if args.metadata_source else input_path
-    with Image.open(metadata_path) as metadata_source:
-        exif = metadata_source.getexif()
-        icc_profile = metadata_source.info.get("icc_profile")
-        xmp = metadata_source.info.get("xmp") or metadata_source.info.get("XML:com.adobe.xmp")
-        source_info = dict(metadata_source.info)
-
     with Image.open(input_path) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGB")
+        image = to_display_rgb(ImageOps.exif_transpose(opened))
 
     if args.deblur_only:
         if args.deblur == "none":
@@ -616,9 +677,9 @@ def main() -> int:
         )
         native_output, _ = upsampler.enhance(np.asarray(image))
     else:
-        selected_weight = model_dir / spec["files"]["main"]["filename"]
+        selected_weight = model_dir / spec["filename"]
         if not selected_weight.exists():
-            raise RuntimeError(f"{spec['display_name']} is not installed. Run: vvd models install normal-hq")
+            raise RuntimeError(f"{spec['display_name']} is not installed. Run: vvd models install {args.mode}")
         native_output, _ = run_spandrel_model(selected_weight, image, tile_size)
 
     result = Image.fromarray(native_output, mode="RGB")
@@ -627,6 +688,7 @@ def main() -> int:
         result = result.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
     print("      Saving output...", flush=True)
+    result = apply_alpha(result, alpha, output_path)
     save_image(result, output_path, args.quality, exif, icc_profile, xmp, source_info)
     return 0
 
@@ -1161,6 +1223,9 @@ model_is_installed() {
     normal-hq)
       [[ -f "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors" ]]
       ;;
+    art)
+      [[ -f "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B/model.safetensors" && -f "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B/config.json" ]]
+      ;;
     maximum-experimental)
       [[ -f "$MODEL_ROOT/HYPIR/HYPIR_sd2.pth" \
         && -f "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base/unet/diffusion_pytorch_model.fp16.safetensors" \
@@ -1274,7 +1339,7 @@ system_ram_gb() {
 
 minimum_ram_for_model() {
   case "$1" in
-    fast|face-restore) echo 8 ;;
+    fast|art|face-restore) echo 8 ;;
     normal|normal-hq|advanced|deblur-motion|deblur-defocus) echo 16 ;;
     maximum|maximum-experimental) echo 24 ;;
     *) echo 0 ;;
@@ -1285,19 +1350,20 @@ if [[ "${1:-}" == "models" ]]; then
   case "${2:-}" in
     status)
       if [[ "${3:-}" == "--json" ]]; then
-        FAST=false; NORMAL=false; NORMAL_HQ=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false; FACE_RESTORE=false
+        FAST=false; NORMAL=false; NORMAL_HQ=false; ART=false; ADVANCED=false; MAXIMUM=false; MAXIMUM_EXPERIMENTAL=false; DEBLUR_MOTION=false; DEBLUR_DEFOCUS=false; FACE_RESTORE=false
         model_is_installed fast && FAST=true
         model_is_installed normal && NORMAL=true
         model_is_installed normal-hq && NORMAL_HQ=true
+        model_is_installed art && ART=true
         model_is_installed advanced && ADVANCED=true
         model_is_installed maximum && MAXIMUM=true
         model_is_installed maximum-experimental && MAXIMUM_EXPERIMENTAL=true
         model_is_installed deblur-motion && DEBLUR_MOTION=true
         model_is_installed deblur-defocus && DEBLUR_DEFOCUS=true
         model_is_installed face-restore && FACE_RESTORE=true
-        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"deblur-motion":%s,"deblur-defocus":%s,"face-restore":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS" "$FACE_RESTORE"
+        printf '{"fast":%s,"normal":%s,"normal-hq":%s,"art":%s,"advanced":%s,"maximum":%s,"maximum-experimental":%s,"deblur-motion":%s,"deblur-defocus":%s,"face-restore":%s}\n' "$FAST" "$NORMAL" "$NORMAL_HQ" "$ART" "$ADVANCED" "$MAXIMUM" "$MAXIMUM_EXPERIMENTAL" "$DEBLUR_MOTION" "$DEBLUR_DEFOCUS" "$FACE_RESTORE"
       else
-        for MODEL_ID in fast normal normal-hq advanced maximum maximum-experimental deblur-motion deblur-defocus face-restore; do
+        for MODEL_ID in fast normal normal-hq art advanced maximum maximum-experimental deblur-motion deblur-defocus face-restore; do
           if model_is_installed "$MODEL_ID"; then
             echo "$MODEL_ID: installed"
           else
@@ -1343,6 +1409,14 @@ if [[ "${1:-}" == "models" ]]; then
           download_model_file \
             "https://huggingface.co/Phips/4xNomosWebPhoto_esrgan/resolve/main/4xNomosWebPhoto_esrgan.safetensors" \
             "$MODEL_ROOT/nomos-webphoto-esrgan/4xNomosWebPhoto_esrgan.safetensors"
+          ;;
+        art)
+          download_model_file \
+            "https://huggingface.co/mlx-community/Real-ESRGAN-x4plus-anime-6B/resolve/main/model.safetensors" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B/model.safetensors"
+          download_model_file \
+            "https://huggingface.co/mlx-community/Real-ESRGAN-x4plus-anime-6B/resolve/main/config.json" \
+            "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B/config.json"
           ;;
         deblur-motion)
           download_model_file \
@@ -1587,7 +1661,7 @@ test_path.write_text(test_source)
 PY
           ;;
         *)
-          echo "Usage: vvd models install fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2
+          echo "Usage: vvd models install fast|normal|normal-hq|art|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2
           exit 2
           ;;
       esac
@@ -1600,12 +1674,13 @@ PY
         fast) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3" ;;
         normal) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus" ;;
         normal-hq) rm -rf "$MODEL_ROOT/nomos-webphoto-esrgan" ;;
+        art) rm -rf "$MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B" ;;
         maximum-experimental) rm -rf "$MODEL_ROOT/HYPIR" "$INSTALL_ROOT/HYPIR-source" ;;
         deblur-motion) rm -rf "$MODEL_ROOT/restormer/motion" ;;
         deblur-defocus) rm -rf "$MODEL_ROOT/restormer/defocus" ;;
-        face-restore) rm -rf "$MODEL_ROOT/codeformer" ;;
+        face-restore) rm -rf "$MODEL_ROOT/codeformer" "$CODEFORMER_ROOT" ;;
         advanced|maximum) rm -rf "$MODEL_ROOT/SEEDVR2" ;;
-        *) echo "Usage: vvd models delete fast|normal|normal-hq|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2; exit 2 ;;
+        *) echo "Usage: vvd models delete fast|normal|normal-hq|art|advanced|maximum|maximum-experimental|deblur-motion|deblur-defocus|face-restore" >&2; exit 2 ;;
       esac
       echo "Deleted model: $MODEL_ID"
       exit 0
@@ -1621,13 +1696,15 @@ if [[ $# -lt 1 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'HELP'
 Usage:
   vvd INPUT [OUTPUT] [options]
+  vvd INPUT... --output-dir DIR [options]    Batch: any mix of image files and folders
 
 Examples:
   vvd photo.jpg
   vvd photo.jpg enhanced.png --scale 2
-  vvd photo.jpg enhanced.png --mode fast --scale 2
-  vvd photo.jpg enhanced.png --mode normal --scale 2
-  vvd photo.jpg enhanced.png --mode advanced --scale 2
+  vvd photo.heic --format jpg --mode normal-hq
+  vvd drawing.png --mode art --scale 4
+  vvd ~/Pictures/Trip --output-dir ~/Pictures/Trip-Upscaled --scale 2
+  vvd *.jpg --output-dir upscaled --mode fast --skip-existing
   vvd models status
   vvd models install normal
 
@@ -1635,6 +1712,7 @@ Modes:
   fast      Quickest upscaling with Real-ESRGAN general x4v3 via MLX.
   normal    Main quality/speed balance with Real-ESRGAN x4plus via MLX. Default.
   normal-hq Photographic restoration with 4xNomosWebPhoto_esrgan via Spandrel MPS.
+  art       Illustrations, anime, and line art with Real-ESRGAN x4plus anime 6B via MLX.
   advanced  Native MLX SeedVR2 3B restoration with 8-bit quantization at 80% internal scale.
   maximum   Native MLX SeedVR2 3B restoration at source precision.
   maximum-experimental
@@ -1643,25 +1721,27 @@ Modes:
 Optional preprocessing:
   deblur-motion   Restormer correction for camera shake, movement, and directional blur.
   deblur-defocus  Restormer correction for out-of-focus and lens blur.
-  face-restore     CodeFormer restoration for detected faces via PyTorch MPS.
+  face-restore    CodeFormer restoration for detected faces via PyTorch MPS.
 
 Options:
-  --mode MODE                  fast, normal, normal-hq, advanced, maximum, or maximum-experimental
-  --fast                       Alias for --mode fast
-  --normal                     Alias for --mode normal
-  --advanced                   Alias for --mode advanced
-  --maximum-experimental       Alias for --mode maximum-experimental
+  --mode MODE                  fast, normal, normal-hq, art, advanced, maximum, or maximum-experimental
+  --fast, --normal, --normal-hq, --art, --advanced, --maximum, --maximum-experimental
+                               Aliases for --mode
   --deblur none|deblur-motion|deblur-defocus
                                Optional Restormer pass before upscaling. Default: none
   --face-restore               Restore detected faces after deblur and before upscaling.
   --codeformer-preset PRESET   enhance, balanced, faithful, or custom. Default: balanced
   --codeformer-fidelity N      Custom fidelity weight from 0 to 1. Default: 0.7
-  --scale N                    Multiply the source width and height by N. Files only.
+  --scale N                    Multiply the source width and height by N.
   --resolution N               Target short edge in pixels. Default: 2048
   --max-resolution N           Maximum long edge. Default: 4096
   --tile auto|on|off           Tiling behavior. Default: auto
   --denoise-strength N         Fast mode denoise balance from 0 to 1. Default: 0.5
-  --quality N                  JPG, JPEG XL, or WebP quality from 1 to 100. Default: 90
+  --quality N                  JPG, JPEG XL, WebP, or AVIF quality from 1 to 100. Default: 90
+  --format FORMAT              Output format when OUTPUT is omitted: png, jpg, webp, jxl, avif, or tiff
+                               Default: the input format (HEIC becomes JPG; BMP and GIF become PNG)
+  --output-dir DIR             Batch: write results to DIR instead of beside each input
+  --skip-existing              Batch: leave inputs whose output already exists untouched
   --seed N                     Variation seed for generative modes. Default: 42
   --seedvr2-preset PRESET      faithful, high-resolution-cleanup, softer-detail, or custom
                                SeedVR2 modes only. Default: faithful
@@ -1679,9 +1759,13 @@ Options:
   --no-progress                Disable wrapper progress messages
   --help                       Show this help
 
+Inputs may be PNG, JPEG, WebP, HEIC/HEIF, AVIF, JPEG XL, TIFF, BMP, or GIF.
 A bare output filename such as output.jpg is saved beside the input file.
 Use ./output.jpg to explicitly save in the current working directory.
-The first run downloads model weights and can use significant disk space.
+Without OUTPUT, Vivid writes NAME_upscaled.EXT beside the input (or in --output-dir).
+Batch mode starts when --output-dir is given, an input is a folder, or more than
+two paths are given. Folders are not searched recursively. Each image is processed
+in turn and the batch continues after an individual failure.
 Models are stored under ~/.local/share/vivid/models by default.
 HELP
   exit 0
@@ -1701,14 +1785,165 @@ make_abs_path() {
   fi
 }
 
-INPUT="$1"
-shift
+lowercase() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
 
-OUTPUT=""
-if [[ $# -gt 0 && "$1" != --* ]]; then
-  OUTPUT="$1"
-  shift
+is_supported_input() {
+  case "$(lowercase "${1##*.}")" in
+    png|jpg|jpeg|webp|heic|heif|avif|jxl|tif|tiff|bmp|gif) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Maps an input extension to the output extension used when none is given.
+default_output_extension() {
+  local extension
+  extension="$(lowercase "$1")"
+  case "$extension" in
+    png|jpg|jpeg|webp|jxl|avif|tif|tiff) printf '%s' "$extension" ;;
+    heic|heif) printf 'jpg' ;;
+    *) printf 'png' ;;
+  esac
+}
+
+VALUE_OPTIONS=" --mode --deblur --codeformer-preset --codeformer-fidelity --scale --multiplier --resolution --max-resolution --tile --denoise-strength --quality --seed --seedvr2-preset --input-noise-scale --latent-noise-scale --color-correction --hypir-preset --hypir-restoration-strength --hypir-patch-size --hypir-patch-stride --hypir-prompt --progress-interval "
+POSITIONALS=()
+PASSTHROUGH=()
+BATCH_OUTPUT_DIR=""
+BATCH_REQUESTED="0"
+SKIP_EXISTING="0"
+OUTPUT_FORMAT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output-dir)
+      BATCH_OUTPUT_DIR="${2:?Missing value for --output-dir}"
+      BATCH_REQUESTED="1"
+      shift 2
+      ;;
+    --skip-existing)
+      SKIP_EXISTING="1"
+      shift
+      ;;
+    --format)
+      OUTPUT_FORMAT="$(lowercase "${2:?Missing value for --format}")"
+      shift 2
+      ;;
+    -h|--help)
+      exec "$0"
+      ;;
+    --*)
+      PASSTHROUGH+=("$1")
+      if [[ "$VALUE_OPTIONS" == *" $1 "* ]]; then
+        PASSTHROUGH+=("${2:?Missing value for $1}")
+        shift
+      fi
+      shift
+      ;;
+    *)
+      POSITIONALS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+case "$OUTPUT_FORMAT" in
+  ""|png|jpg|webp|jxl|avif|tiff) ;;
+  jpeg) OUTPUT_FORMAT="jpg" ;;
+  tif) OUTPUT_FORMAT="tiff" ;;
+  *)
+    echo "--format must be png, jpg, webp, jxl, avif, or tiff" >&2
+    exit 2
+    ;;
+esac
+
+if (( ${#POSITIONALS[@]} == 0 )); then
+  echo "Missing input image. Run vvd --help for usage." >&2
+  exit 2
 fi
+if (( ${#POSITIONALS[@]} > 2 )); then
+  BATCH_REQUESTED="1"
+fi
+for POSITIONAL in "${POSITIONALS[@]}"; do
+  if [[ -d "$POSITIONAL" ]]; then
+    BATCH_REQUESTED="1"
+  fi
+done
+
+if [[ "$BATCH_REQUESTED" == "1" ]]; then
+  BATCH_INPUTS=()
+  for POSITIONAL in "${POSITIONALS[@]}"; do
+    if [[ -d "$POSITIONAL" ]]; then
+      while IFS= read -r -d '' CANDIDATE; do
+        if is_supported_input "$CANDIDATE"; then
+          BATCH_INPUTS+=("$CANDIDATE")
+        fi
+      done < <(find "$POSITIONAL" -maxdepth 1 -type f ! -name '.*' ! -name '*_upscaled.*' -print0 | sort -z)
+    elif [[ -f "$POSITIONAL" ]]; then
+      if is_supported_input "$POSITIONAL"; then
+        BATCH_INPUTS+=("$POSITIONAL")
+      else
+        echo "Skipping unsupported file: $POSITIONAL" >&2
+      fi
+    else
+      echo "Input not found: $POSITIONAL" >&2
+      exit 2
+    fi
+  done
+  if (( ${#BATCH_INPUTS[@]} == 0 )); then
+    echo "No supported images found." >&2
+    exit 2
+  fi
+  if [[ -n "$BATCH_OUTPUT_DIR" ]]; then
+    mkdir -p "$BATCH_OUTPUT_DIR"
+  fi
+
+  BATCH_TOTAL=${#BATCH_INPUTS[@]}
+  BATCH_DONE=0
+  BATCH_SKIPPED=0
+  BATCH_FAILED=0
+  BATCH_INDEX=0
+  for BATCH_INPUT in "${BATCH_INPUTS[@]}"; do
+    BATCH_INDEX=$((BATCH_INDEX + 1))
+    BATCH_NAME="$(basename "$BATCH_INPUT")"
+    BATCH_EXTENSION="${OUTPUT_FORMAT:-$(default_output_extension "${BATCH_NAME##*.}")}"
+    BATCH_DIR="${BATCH_OUTPUT_DIR:-$(dirname "$BATCH_INPUT")}"
+    BATCH_OUTPUT="$BATCH_DIR/${BATCH_NAME%.*}_upscaled.$BATCH_EXTENSION"
+    echo "[batch] $BATCH_INDEX/$BATCH_TOTAL $BATCH_NAME"
+    if [[ "$SKIP_EXISTING" == "1" && -e "$BATCH_OUTPUT" ]]; then
+      echo "        Skipped: $BATCH_OUTPUT already exists"
+      BATCH_SKIPPED=$((BATCH_SKIPPED + 1))
+      continue
+    fi
+    STATUS=0
+    "${BASH_SOURCE[0]}" "$BATCH_INPUT" "$BATCH_OUTPUT" ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"} || STATUS=$?
+    if [[ "$STATUS" -eq 0 ]]; then
+      BATCH_DONE=$((BATCH_DONE + 1))
+    elif [[ "$STATUS" -eq 2 && "$BATCH_INDEX" -eq 1 ]]; then
+      # Invalid options fail identically for every image; stop immediately.
+      exit 2
+    elif [[ "$STATUS" -eq 130 || "$STATUS" -eq 143 ]]; then
+      echo "[batch] Interrupted after $BATCH_DONE of $BATCH_TOTAL images" >&2
+      exit "$STATUS"
+    else
+      echo "[batch] Failed: $BATCH_NAME" >&2
+      BATCH_FAILED=$((BATCH_FAILED + 1))
+    fi
+  done
+  echo "[batch] Complete: $BATCH_DONE upscaled, $BATCH_SKIPPED skipped, $BATCH_FAILED failed"
+  if [[ "$BATCH_FAILED" -gt 0 ]]; then
+    exit 1
+  fi
+  exit 0
+fi
+
+INPUT="${POSITIONALS[0]}"
+OUTPUT="${POSITIONALS[1]:-}"
+if [[ -n "$OUTPUT" && -n "$OUTPUT_FORMAT" ]]; then
+  echo "--format only applies when OUTPUT is omitted; the OUTPUT extension selects the format." >&2
+  exit 2
+fi
+set -- ${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}
 
 MODE="normal"
 RESOLUTION="2048"
@@ -1768,6 +2003,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --maximum-experimental)
       MODE="maximum-experimental"
+      shift
+      ;;
+    --art)
+      MODE="art"
       shift
       ;;
     --deblur)
@@ -1877,9 +2116,6 @@ while [[ $# -gt 0 ]]; do
       SHOW_PROGRESS="0"
       shift
       ;;
-    --help|-h)
-      exec "$0"
-      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 2
@@ -1888,9 +2124,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-  fast|normal|normal-hq|advanced|maximum|maximum-experimental) ;;
+  fast|normal|normal-hq|art|advanced|maximum|maximum-experimental) ;;
   *)
-    echo "--mode must be fast, normal, normal-hq, advanced, maximum, or maximum-experimental" >&2
+    echo "--mode must be fast, normal, normal-hq, art, advanced, maximum, or maximum-experimental" >&2
     exit 2
     ;;
 esac
@@ -2120,51 +2356,76 @@ if [[ -n "$OUTPUT" ]]; then
   fi
 fi
 if [[ ! -f "$INPUT" ]]; then
-  echo "Vivid currently requires a single input image." >&2
+  echo "Input image not found: $INPUT" >&2
   exit 2
 fi
 if [[ -z "$OUTPUT" ]]; then
-  OUTPUT="$($PYTHON - "$INPUT" <<'PY'
-from pathlib import Path
-import sys
-p = Path(sys.argv[1])
-print(str(p.with_name(f"{p.stem}_upscaled{p.suffix}")))
-PY
-)"
+  INPUT_NAME="$(basename "$INPUT")"
+  OUTPUT_EXTENSION="${OUTPUT_FORMAT:-$(default_output_extension "${INPUT_NAME##*.}")}"
+  OUTPUT="$(dirname "$INPUT")/${INPUT_NAME%.*}_upscaled.$OUTPUT_EXTENSION"
+fi
+case "$(lowercase "${OUTPUT##*.}")" in
+  png|jpg|jpeg|webp|jxl|avif|tif|tiff) ;;
+  *)
+    echo "Unsupported output format: $OUTPUT. Use .png, .jpg, .webp, .jxl, .avif, or .tiff." >&2
+    exit 2
+    ;;
+esac
+if [[ -n "$SCALE" ]]; then
+  if ! [[ "$SCALE" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$SCALE" =~ ^0+([.]0+)?$ ]]; then
+    echo "--scale must be a positive number such as 2 or 4." >&2
+    exit 2
+  fi
 fi
 
 mkdir -p "$MODEL_ROOT"
 
+# Every intermediate lives in a private work directory that is removed on exit,
+# including when the job is cancelled, so nothing leaks beside the user's files.
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vivid.XXXXXX")"
+CHILD_PID=""
+cleanup() {
+  if [[ -n "$CHILD_PID" ]] && kill -0 "$CHILD_PID" 2>/dev/null; then
+    pkill -TERM -P "$CHILD_PID" 2>/dev/null || true
+    kill -TERM "$CHILD_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK_DIR"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Runs a processing step in the background so INT/TERM interrupt the wait
+# immediately and the EXIT trap can stop the step instead of orphaning it.
+run_step() {
+  "$@" &
+  CHILD_PID=$!
+  local status=0
+  wait "$CHILD_PID" || status=$?
+  CHILD_PID=""
+  return "$status"
+}
+
+# Decode HEIC, TIFF, 16-bit, CMYK, and EXIF-rotated sources once into an upright
+# PNG so every backend sees the same pixels. Metadata still comes from INPUT.
+SOURCE_INPUT="$INPUT"
+if ! PREPARED="$("$PYTHON" "$UPSCALE_HELPER" "$INPUT" "$WORK_DIR/source.png" --prepare-input)"; then
+  echo "Vivid could not read the input image: $INPUT" >&2
+  exit 2
+fi
+read -r SOURCE_WIDTH SOURCE_HEIGHT SOURCE_NORMALIZED <<< "$PREPARED"
+if [[ "$SOURCE_NORMALIZED" == "1" ]]; then
+  SOURCE_INPUT="$WORK_DIR/source.png"
+fi
+
 if [[ -n "$SCALE" ]]; then
-  if [[ ! -f "$INPUT" ]]; then
-    echo "--scale currently supports a single input image, not a directory." >&2
-    exit 2
-  fi
-
-  if ! [[ "$SCALE" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$SCALE" == "0" ]] || [[ "$SCALE" == "0.0" ]]; then
-    echo "--scale must be a positive number such as 2 or 4." >&2
-    exit 2
-  fi
-
-  DIMENSIONS="$($PYTHON - "$INPUT" "$SCALE" <<'PY'
-from pathlib import Path
-import sys
-from PIL import Image
-
-path = Path(sys.argv[1])
-scale = float(sys.argv[2])
-if scale <= 0:
-    raise SystemExit("--scale must be greater than zero")
-
-with Image.open(path) as image:
-    width, height = image.size
-
-short_edge = max(1, round(min(width, height) * scale))
-long_edge = max(1, round(max(width, height) * scale))
-print(short_edge, long_edge)
-PY
-)"
-  read -r RESOLUTION MAX_RESOLUTION <<< "$DIMENSIONS"
+  read -r RESOLUTION MAX_RESOLUTION <<< "$(awk -v width="$SOURCE_WIDTH" -v height="$SOURCE_HEIGHT" -v scale="$SCALE" '
+    function rounded(value) { value = int(value + 0.5); return value < 1 ? 1 : value }
+    BEGIN {
+      short_edge = width < height ? width : height
+      long_edge = width > height ? width : height
+      print rounded(short_edge * scale), rounded(long_edge * scale)
+    }')"
 fi
 
 ADVANCED_TILE_NOTE="off"
@@ -2172,7 +2433,7 @@ ADVANCED_TARGET_WIDTH=""
 ADVANCED_TARGET_HEIGHT=""
 SEEDVR2_RESOLUTION="$RESOLUTION"
 if [[ "$MODE" == "advanced" ]]; then
-  ADVANCED_DIMENSIONS="$("$PYTHON" "$SEEDVR2_HELPER" --vivid-plan-dimensions "$INPUT" "$RESOLUTION" "$MAX_RESOLUTION")"
+  ADVANCED_DIMENSIONS="$("$PYTHON" "$SEEDVR2_HELPER" --vivid-plan-dimensions "$SOURCE_INPUT" "$RESOLUTION" "$MAX_RESOLUTION")"
   read -r REQUESTED_WIDTH REQUESTED_HEIGHT ADVANCED_TARGET_WIDTH ADVANCED_TARGET_HEIGHT <<< "$ADVANCED_DIMENSIONS"
   SEEDVR2_RESOLUTION=$((ADVANCED_TARGET_WIDTH < ADVANCED_TARGET_HEIGHT ? ADVANCED_TARGET_WIDTH : ADVANCED_TARGET_HEIGHT))
 fi
@@ -2200,10 +2461,7 @@ if [[ "$MODE" == "advanced" || "$MODE" == "maximum" ]]; then
   esac
 fi
 
-PROCESSING_OUTPUT="$OUTPUT"
-if [[ ( "$MODE" == "advanced" || "$MODE" == "maximum" ) && -n "$OUTPUT" ]]; then
-  PROCESSING_OUTPUT="${OUTPUT%.*}.vivid-temp.png"
-fi
+PROCESSING_OUTPUT="$WORK_DIR/seedvr2.png"
 
 # A value of 0.0 disables PyTorch's MPS allocation guard and can make macOS
 # unresponsive under unified-memory pressure. These defaults retain most of the
@@ -2237,6 +2495,7 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
     echo "      Output: auto-generated beside the input"
   fi
   echo "      Mode:   $MODE"
+  echo "      Source: ${SOURCE_WIDTH}x${SOURCE_HEIGHT}"
   if [[ "$DEBLUR" != "none" ]]; then
     echo "      Deblur: $DEBLUR"
   fi
@@ -2275,6 +2534,11 @@ if [[ "$SHOW_PROGRESS" == "1" ]]; then
       echo "      Model files: $MODEL_ROOT/nomos-webphoto-esrgan"
       echo "      Tiling: $TILE_MODE"
       ;;
+    art)
+      echo "      Model:  mlx-community/Real-ESRGAN-x4plus-anime-6B"
+      echo "      Model files: $MODEL_ROOT/mlx/Real-ESRGAN-x4plus-anime-6B"
+      echo "      Tiling: $TILE_MODE"
+      ;;
     fast)
       echo "      Model:  mlx-community/Real-ESRGAN-general-x4v3"
       echo "      Model files: $MODEL_ROOT/mlx/Real-ESRGAN-general-x4v3"
@@ -2287,35 +2551,30 @@ fi
 
 START_SECONDS=$SECONDS
 
-PROCESSING_INPUT="$INPUT"
-DEBLUR_OUTPUT=""
-FACE_RESTORE_OUTPUT=""
+PROCESSING_INPUT="$SOURCE_INPUT"
 if [[ "$DEBLUR" != "none" ]]; then
-  DEBLUR_OUTPUT="${OUTPUT%.*}.vivid-deblur-temp.png"
+  DEBLUR_OUTPUT="$WORK_DIR/deblur.png"
   set +e
-  "$PYTHON" -u "$UPSCALE_HELPER" \
+  run_step "$PYTHON" -u "$UPSCALE_HELPER" \
     "$INPUT" "$DEBLUR_OUTPUT" \
     --model-root "$MODEL_ROOT" \
     --mode fast \
     --deblur "$DEBLUR" \
     --deblur-only \
-    --short-edge "$RESOLUTION" \
-    --max-long-edge "$MAX_RESOLUTION" \
     --tile "$TILE_MODE" \
     --system-ram-gb "$AVAILABLE_RAM"
   STATUS=$?
   set -e
   if [[ "$STATUS" -ne 0 ]]; then
-    rm -f "$DEBLUR_OUTPUT"
     exit "$STATUS"
   fi
   PROCESSING_INPUT="$DEBLUR_OUTPUT"
 fi
 
 if [[ "$FACE_RESTORE" == "1" ]]; then
-  FACE_RESTORE_OUTPUT="${OUTPUT%.*}.vivid-face-restore-temp.png"
+  FACE_RESTORE_OUTPUT="$WORK_DIR/face-restore.png"
   set +e
-  "$PYTHON" -u "$CODEFORMER_HELPER" \
+  run_step "$PYTHON" -u "$CODEFORMER_HELPER" \
     "$PROCESSING_INPUT" "$FACE_RESTORE_OUTPUT" \
     --code-root "$CODEFORMER_ROOT" \
     --model-root "$MODEL_ROOT" \
@@ -2323,16 +2582,14 @@ if [[ "$FACE_RESTORE" == "1" ]]; then
   STATUS=$?
   set -e
   if [[ "$STATUS" -ne 0 ]]; then
-    rm -f "$FACE_RESTORE_OUTPUT"
-    [[ -n "$DEBLUR_OUTPUT" ]] && rm -f "$DEBLUR_OUTPUT"
     exit "$STATUS"
   fi
   PROCESSING_INPUT="$FACE_RESTORE_OUTPUT"
 fi
 
-if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" ]]; then
+if [[ "$MODE" == "fast" || "$MODE" == "normal" || "$MODE" == "normal-hq" || "$MODE" == "art" ]]; then
   set +e
-  "$PYTHON" -u "$UPSCALE_HELPER" \
+  run_step "$PYTHON" -u "$UPSCALE_HELPER" \
     "$PROCESSING_INPUT" "$OUTPUT" \
     --model-root "$MODEL_ROOT" \
     --mode "$MODE" \
@@ -2349,7 +2606,7 @@ elif [[ "$MODE" == "maximum-experimental" ]]; then
   if [[ "$SHOW_PROGRESS" == "1" ]]; then
     echo "[2/3] Upscaling"
   fi
-  HYPIR_WORK="$(mktemp -d "${TMPDIR:-/tmp}/vivid-hypir.XXXXXX")"
+  HYPIR_WORK="$WORK_DIR/hypir"
   mkdir -p "$HYPIR_WORK/input" "$HYPIR_WORK/output"
   "$PYTHON" - "$PROCESSING_INPUT" "$HYPIR_WORK/input/source.png" <<'PY'
 from PIL import Image
@@ -2408,7 +2665,7 @@ PY
   set +e
   (
     cd "$INSTALL_ROOT/HYPIR-source"
-    "$PYTHON" -u test.py \
+    exec "$PYTHON" -u test.py \
       --base_model_type sd2 \
       --base_model_path "$MODEL_ROOT/HYPIR/stable-diffusion-2-1-base" \
       --model_t 200 \
@@ -2426,8 +2683,11 @@ PY
       --output_dir "$HYPIR_WORK/output" \
       --seed "$SEED" \
       --device mps
-  )
-  STATUS=$?
+  ) &
+  CHILD_PID=$!
+  STATUS=0
+  wait "$CHILD_PID" || STATUS=$?
+  CHILD_PID=""
   set -e
 
   if [[ "$STATUS" -eq 0 ]]; then
@@ -2435,7 +2695,7 @@ PY
       echo "[progress] 90% Blending restoration detail"
     fi
     set +e
-    "$PYTHON" -u "$HYPIR_BLEND_HELPER" \
+    run_step "$PYTHON" -u "$HYPIR_BLEND_HELPER" \
       "$PROCESSING_INPUT" \
       "$HYPIR_WORK/output/result/source.png" \
       "$HYPIR_WORK/blended.png" \
@@ -2449,7 +2709,7 @@ PY
       echo "[progress] 92% Finalizing output"
     fi
     set +e
-    "$PYTHON" -u "$UPSCALE_HELPER" \
+    run_step "$PYTHON" -u "$UPSCALE_HELPER" \
       "$HYPIR_WORK/blended.png" "$OUTPUT" \
       --model-root "$MODEL_ROOT" \
       --mode fast \
@@ -2461,7 +2721,6 @@ PY
     STATUS=$?
     set -e
   fi
-  rm -rf "$HYPIR_WORK"
 else
   cd "$INSTALL_ROOT"
 
@@ -2497,11 +2756,6 @@ else
   "$PYTHON" -u "$SEEDVR2_HELPER" "${MFLUX_ARGS[@]}" &
   CHILD_PID=$!
 
-  forward_signal() {
-    kill -TERM "$CHILD_PID" 2>/dev/null || true
-  }
-  trap forward_signal INT TERM
-
   while kill -0 "$CHILD_PID" 2>/dev/null; do
     sleep 1
     if [[ "$SHOW_PROGRESS" == "1" ]] && kill -0 "$CHILD_PID" 2>/dev/null; then
@@ -2512,11 +2766,9 @@ else
     fi
   done
 
-  set +e
-  wait "$CHILD_PID"
-  STATUS=$?
-  set -e
-  trap - INT TERM
+  STATUS=0
+  wait "$CHILD_PID" || STATUS=$?
+  CHILD_PID=""
 
   if [[ "$STATUS" -eq 134 ]]; then
     echo "SeedVR was stopped after Metal rejected an unsafe memory allocation." >&2
@@ -2528,7 +2780,7 @@ else
       echo "[progress] 92% Finalizing output"
     fi
     set +e
-    "$PYTHON" -u "$UPSCALE_HELPER" \
+    run_step "$PYTHON" -u "$UPSCALE_HELPER" \
       "$PROCESSING_OUTPUT" "$OUTPUT" \
       --model-root "$MODEL_ROOT" \
       --mode fast \
@@ -2540,13 +2792,6 @@ else
     STATUS=$?
     set -e
   fi
-fi
-
-if [[ -n "$DEBLUR_OUTPUT" ]]; then
-  rm -f "$DEBLUR_OUTPUT"
-fi
-if [[ -n "$FACE_RESTORE_OUTPUT" ]]; then
-  rm -f "$FACE_RESTORE_OUTPUT"
 fi
 
 ELAPSED=$((SECONDS - START_SECONDS))

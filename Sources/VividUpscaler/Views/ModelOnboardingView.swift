@@ -42,7 +42,7 @@ struct ModelOnboardingView: View {
             Button("Delete Model", role: .destructive) { deleteModel(model) }
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
         } message: { model in
-            Text("The downloaded \(model.modelName) weights will be removed from this Mac. You can download them again later.")
+            Text(deletionMessage(for: model))
         }
     }
 
@@ -57,11 +57,14 @@ struct ModelOnboardingView: View {
         case .choose:
             VStack(alignment: .leading, spacing: 12) {
                 Text(isManaging ? "Manage models" : "Choose your models").font(.largeTitle.bold())
-                Text("This Mac has \(store.systemRAMGB) GB of RAM. Normal is the best starting point for most photos.")
+                Text("This Mac has \(store.systemRAMGB) GB of RAM. Normal is the best starting point for most photos; Art & Anime suits drawings and screenshots.")
                     .foregroundStyle(.secondary)
                 ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(ModelInfo.choices) { model in modelRow(model) }
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        Text("Upscaling").font(.headline).foregroundStyle(.secondary)
+                        ForEach(ModelInfo.upscaleChoices) { model in modelRow(model) }
+                        Text("Enhancements").font(.headline).foregroundStyle(.secondary).padding(.top, 8)
+                        ForEach(ModelInfo.enhancementChoices) { model in modelRow(model) }
                     }
                     .padding(.vertical, 2)
                 }
@@ -120,7 +123,7 @@ struct ModelOnboardingView: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                Text("Minimum \(model.minimumRAMGB) GB · Recommended \(model.recommendedRAMGB) GB · Large images \(model.largeImageRAMGB) GB · Tiling \(model.defaultTiling)")
+                Text("\(model.formattedDownloadSize) download · Minimum \(model.minimumRAMGB) GB · Recommended \(model.recommendedRAMGB) GB · Large images \(model.largeImageRAMGB) GB")
                     .font(.caption2)
                     .foregroundStyle(compatible ? Color.secondary.opacity(0.7) : Color.red)
                 if !compatible {
@@ -152,7 +155,7 @@ struct ModelOnboardingView: View {
                 if isManaging {
                     Button("Done") { dismiss() }
                 }
-                Button("Download Selected") { beginInstall() }
+                Button(downloadTitle) { beginInstall() }
                     .buttonStyle(.borderedProminent)
                     .disabled(selectedDownloads.isEmpty)
             case .installing:
@@ -161,6 +164,24 @@ struct ModelOnboardingView: View {
                 Button("Done") { store.showOnboarding = false; dismiss() }.buttonStyle(.borderedProminent)
             }
         }
+    }
+
+    private var downloadTitle: String {
+        let megabytes = ModelInfo.downloadMB(for: selectedDownloads)
+        return megabytes > 0
+            ? "Download Selected (\(ModelInfo.formatDownloadSize(megabytes: megabytes)))"
+            : "Download Selected"
+    }
+
+    private func deletionMessage(for model: ModelInfo) -> String {
+        let shared = model.sharesWeightsWith
+            .filter { store.installedModelIDs.contains($0) }
+            .compactMap { ModelInfo.info(for: $0)?.title }
+        var message = "The downloaded \(model.modelName) weights will be removed from this Mac. You can download them again later."
+        if !shared.isEmpty {
+            message += " \(shared.joined(separator: " and ")) uses the same weights and will be removed too."
+        }
+        return message
     }
 
     private func prepareSelection() {
